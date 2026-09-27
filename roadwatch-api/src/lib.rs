@@ -45,18 +45,48 @@ pub struct CreateReport {
 pub struct AcceptedReport {
     pub report_id: Uuid,
     pub status: &'static str,
+    pub duplicate_candidate_ids: Vec<Uuid>,
 }
 
 async fn create_report(
+    State(state): State<AppState>,
     Json(report): Json<CreateReport>,
 ) -> Result<(StatusCode, Json<AcceptedReport>), (StatusCode, Json<ApiError>)> {
     validate_coordinates(report.latitude, report.longitude)?;
     if report.bearing_degrees.is_some_and(|b| b > 359) {
         return Err(bad_request("bearing_degrees must be between 0 and 359"));
     }
+
+    let claimed_function = report.claimed_function.as_deref().unwrap_or("unknown");
+    const ALLOWED_FUNCTIONS: &[&str] = &[
+        "alpr", "speed_enforcement", "red_light_enforcement", "traffic_monitoring",
+        "tolling", "public_surveillance", "parking_municipal", "unknown",
+    ];
+    if !ALLOWED_FUNCTIONS.contains(&claimed_function) {
+        return Err(bad_request("unsupported claimed_function"));
+    }
+
+    let Some(pool) = state.pool else {
+        return Ok((StatusCode::ACCEPTED, Json(AcceptedReport {
+            report_id: Uuid::new_v4(),
+            status: "accepted_unverified_not_persisted",
+            duplicate_candidate_ids: Vec::new(),
+        })));
+    };
+
+    let stored = db::store_report(&pool, db::NewReport {
+        latitude: report.latitude,
+        longitude: report.longitude,
+        bearing_degrees: report.bearing_degrees.map(|b| b as i16),
+        claimed_function,
+        claimed_manufacturer: report.claimed_manufacturer.as_deref(),
+        observed_at: report.observed_at.as_deref(),
+    }).await.map_err(|_| internal_error("database write failed"))?;
+
     Ok((StatusCode::ACCEPTED, Json(AcceptedReport {
-        report_id: Uuid::new_v4(),
+        report_id: stored.report_id,
         status: "accepted_unverified",
+        duplicate_candidate_ids: stored.candidate_camera_ids,
     })))
 }
 
@@ -182,6 +212,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let bytes = to_bytes(response.into_body(), 16_384).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["status"], "accepted_unverified");
+        assert_eq!(value["status"], "accepted_unverified_not_persisted");
     }
 }
