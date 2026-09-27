@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 pub struct LocalEvidenceStore {
@@ -42,6 +43,13 @@ impl LocalEvidenceStore {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid sanitized SHA-256"));
         }
         let key = sha256.to_ascii_lowercase();
+        let actual = format!("{:x}", Sha256::digest(bytes));
+        if actual != key {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sanitized bytes do not match supplied SHA-256",
+            ));
+        }
         let final_path = self.sanitized_root.join(&key);
         if final_path.exists() {
             return Ok(StoredObject { object_key: key });
@@ -188,4 +196,15 @@ mod tests {
         assert!(store.delete_quarantine("../../etc/passwd").is_err());
         fs::remove_dir_all(base).unwrap();
     }
+    #[test]
+    fn sanitized_store_rejects_hash_mismatch() {
+        let (q, clean, base) = temp_roots();
+        let store = LocalEvidenceStore::new(q, clean).unwrap();
+        let wrong = "0".repeat(64);
+        let err = store.put_sanitized(&wrong, b"actual sanitized bytes").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let _ = fs::remove_dir_all(base);
+    }
+
+
 }
