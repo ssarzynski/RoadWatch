@@ -3,6 +3,7 @@
 //! AI classification is advisory and cannot establish physical camera presence.
 
 pub mod candidate;
+pub mod risk;
 
 use std::collections::HashSet;
 
