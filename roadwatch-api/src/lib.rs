@@ -95,6 +95,48 @@ async fn create_report(
         return Err(bad_request("unsupported claimed_function"));
     }
 
+    let contributor_hash = headers
+        .get("x-roadwatch-contributor")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| {
+            state
+                .contributor_hmac_key
+                .as_deref()
+                .and_then(|key| contributor_token_hash(raw, key))
+        });
+
+    let report_risk = if let (Some(pool), Some(hash)) = (state.pool.as_ref(), contributor_hash.as_ref()) {
+        match db::contributor_risk_facts(pool, hash).await {
+            Ok(facts) => {
+                let prior = match (facts.prior_latitude, facts.prior_longitude, facts.prior_received_unix) {
+                    (Some(latitude), Some(longitude), Some(received_at)) =>
+                        Some(PriorObservation { latitude, longitude, received_at }),
+                    _ => None,
+                };
+                let received_at = sqlx::query_scalar::<_, i64>(
+                    "SELECT extract(epoch from clock_timestamp())::bigint"
+                ).fetch_one(pool).await.unwrap_or(0);
+                Some(risk::assess(&RiskInput {
+                    latitude: report.latitude,
+                    longitude: report.longitude,
+                    received_at,
+                    reports_last_hour: facts.reports_last_hour.max(0) as u32,
+                    exact_image_replay: false,
+                    perceptual_image_replay: false,
+                    correlated_source_count: 0,
+                    prior: prior.as_ref(),
+                }))
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    // Risk signals trigger review / loss of independent weight; they do not
+    // automatically delete or reject an otherwise valid public observation.
+    let _report_risk = report_risk;
+
     let Some(pool) = state.pool else {
         return Ok((StatusCode::ACCEPTED, Json(AcceptedReport {
             report_id: Uuid::new_v4(),
@@ -104,6 +146,7 @@ async fn create_report(
     };
 
     let stored = db::store_report(&pool, db::NewReport {
+        contributor_token_hash: contributor_hash,
         latitude: report.latitude,
         longitude: report.longitude,
         bearing_degrees: report.bearing_degrees.map(|b| b as i16),
