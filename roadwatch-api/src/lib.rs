@@ -8,7 +8,8 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use roadwatch_image_ingestion::{evaluate_upload, IngestionDecision};
 use roadwatch_image_ingestion::storage::LocalEvidenceStore;
 use roadwatch_verification::risk::{self, PriorObservation, RiskInput};
@@ -22,6 +23,7 @@ pub const MAX_NEARBY_RADIUS_M: u32 = 5_000;
 pub struct AppState {
     pub pool: Option<PgPool>,
     pub evidence_store: Option<Arc<LocalEvidenceStore>>,
+    pub contributor_hmac_key: Option<Arc<Vec<u8>>>,
 }
 
 pub fn app() -> Router {
@@ -32,15 +34,18 @@ pub fn app() -> Router {
 const CONTRIBUTOR_TOKEN_MIN_LEN: usize = 32;
 const CONTRIBUTOR_TOKEN_MAX_LEN: usize = 128;
 
-pub fn contributor_token_hash(raw: &str) -> Option<String> {
-    if raw.len() < CONTRIBUTOR_TOKEN_MIN_LEN
+pub fn contributor_token_hash(raw: &str, key: &[u8]) -> Option<String> {
+    if key.len() < 32
+        || raw.len() < CONTRIBUTOR_TOKEN_MIN_LEN
         || raw.len() > CONTRIBUTOR_TOKEN_MAX_LEN
         || !raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         return None;
     }
-    let digest = Sha256::digest(raw.as_bytes());
-    Some(format!("{digest:x}"))
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+    mac.update(b"roadwatch-contributor-v1\0");
+    mac.update(raw.as_bytes());
+    Some(hex::encode(mac.finalize().into_bytes()))
 }
 
 pub fn app_with_state(state: AppState) -> Router {
@@ -399,16 +404,16 @@ mod tests {
     #[test]
     fn contributor_token_is_hashed_and_raw_value_is_not_returned() {
         let raw = "A234567890123456789012345678901234567890123";
-        let hash = contributor_token_hash(raw).unwrap();
+        let hash = contributor_token_hash(raw, &[7_u8; 32]).unwrap();
         assert_eq!(hash.len(), 64);
         assert_ne!(hash, raw);
     }
 
     #[test]
     fn contributor_token_rejects_short_or_pathological_values() {
-        assert!(contributor_token_hash("short").is_none());
-        assert!(contributor_token_hash(&"x".repeat(129)).is_none());
-        assert!(contributor_token_hash("this token contains spaces and is long enough").is_none());
+        assert!(contributor_token_hash("short", &[7_u8; 32]).is_none());
+        assert!(contributor_token_hash(&"x".repeat(129), &[7_u8; 32]).is_none());
+        assert!(contributor_token_hash("this token contains spaces and is long enough", &[7_u8; 32]).is_none());
     }
 
 
