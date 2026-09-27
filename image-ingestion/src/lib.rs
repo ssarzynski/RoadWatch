@@ -2,6 +2,8 @@
 //! Originals are hostile input. Only freshly decoded/re-encoded derivatives
 //! may be considered for public evidence.
 
+pub mod storage;
+
 use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
