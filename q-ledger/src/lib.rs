@@ -263,6 +263,112 @@ pub fn compare_checkpoints(
     Ok(CheckpointComparison::SameLogGrowth)
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppendOnlyProof {
+    pub old_tree_size: u64,
+    pub new_tree_size: u64,
+    /// v0.1 intentionally favors auditability over proof size: these are the
+    /// committed leaf hashes for the old prefix and appended suffix.
+    pub old_leaf_hashes: Vec<String>,
+    pub appended_leaf_hashes: Vec<String>,
+}
+
+fn decode_hash(value: &str) -> Result<Hash, LedgerError> {
+    hex::decode(value)
+        .map_err(|_| LedgerError::InvalidHex)?
+        .try_into()
+        .map_err(|_| LedgerError::InvalidHex)
+}
+
+pub fn build_append_only_proof(
+    old_events: &[LedgerEvent],
+    new_events: &[LedgerEvent],
+) -> Result<AppendOnlyProof, LedgerError> {
+    if old_events.len() > new_events.len()
+        || !verify_chain(old_events)?
+        || !verify_chain(new_events)?
+    {
+        return Err(LedgerError::VerificationFailed);
+    }
+
+    for (old, new) in old_events.iter().zip(new_events.iter()) {
+        if event_hash(old)? != event_hash(new)? {
+            return Err(LedgerError::VerificationFailed);
+        }
+    }
+
+    let old_leaf_hashes = old_events
+        .iter()
+        .map(event_hash)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(hex_hash)
+        .collect();
+    let appended_leaf_hashes = new_events[old_events.len()..]
+        .iter()
+        .map(event_hash)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(hex_hash)
+        .collect();
+
+    Ok(AppendOnlyProof {
+        old_tree_size: old_events.len() as u64,
+        new_tree_size: new_events.len() as u64,
+        old_leaf_hashes,
+        appended_leaf_hashes,
+    })
+}
+
+pub fn verify_append_only_proof(
+    old_checkpoint: &SignedCheckpoint,
+    new_checkpoint: &SignedCheckpoint,
+    proof: &AppendOnlyProof,
+) -> Result<(), LedgerError> {
+    verify_checkpoint(old_checkpoint)?;
+    verify_checkpoint(new_checkpoint)?;
+
+    if old_checkpoint.public_key != new_checkpoint.public_key
+        || proof.old_tree_size != old_checkpoint.tree_size
+        || proof.new_tree_size != new_checkpoint.tree_size
+        || proof.old_tree_size > proof.new_tree_size
+        || proof.old_leaf_hashes.len() as u64 != proof.old_tree_size
+        || (proof.old_leaf_hashes.len() + proof.appended_leaf_hashes.len()) as u64
+            != proof.new_tree_size
+    {
+        return Err(LedgerError::VerificationFailed);
+    }
+
+    let old_hashes = proof
+        .old_leaf_hashes
+        .iter()
+        .map(|h| decode_hash(h))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut new_hashes = old_hashes.clone();
+    new_hashes.extend(
+        proof
+            .appended_leaf_hashes
+            .iter()
+            .map(|h| decode_hash(h))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+
+    let old_root = hex_hash(merkle_root(&old_hashes));
+    let new_root = hex_hash(merkle_root(&new_hashes));
+    let old_last = hex_hash(old_hashes.last().copied().unwrap_or(GENESIS_PREVIOUS_HASH));
+    let new_last = hex_hash(new_hashes.last().copied().unwrap_or(GENESIS_PREVIOUS_HASH));
+
+    if old_root != old_checkpoint.merkle_root
+        || new_root != new_checkpoint.merkle_root
+        || old_last != old_checkpoint.last_event_hash
+        || new_last != new_checkpoint.last_event_hash
+    {
+        return Err(LedgerError::VerificationFailed);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +450,28 @@ mod tests {
             compare_checkpoints(&a, &b).unwrap(),
             CheckpointComparison::DifferentSigner
         );
+    }
+
+
+    #[test]
+    fn append_only_proof_accepts_true_extension_and_rejects_rewrite() {
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let first = event(0, GENESIS_PREVIOUS_HASH, "a");
+        let first_hash = event_hash(&first).unwrap();
+        let second = event(1, first_hash, "b");
+        let old_events = vec![first.clone()];
+        let new_events = vec![first.clone(), second];
+        let old_cp = sign_checkpoint(&old_events, &key, 100).unwrap();
+        let new_cp = sign_checkpoint(&new_events, &key, 200).unwrap();
+        let proof = build_append_only_proof(&old_events, &new_events).unwrap();
+        verify_append_only_proof(&old_cp, &new_cp, &proof).unwrap();
+
+        let rewritten_first = event(0, GENESIS_PREVIOUS_HASH, "rewritten");
+        let rewritten_hash = event_hash(&rewritten_first).unwrap();
+        let rewritten_second = event(1, rewritten_hash, "b");
+        let rewritten_events = vec![rewritten_first, rewritten_second];
+        let rewritten_cp = sign_checkpoint(&rewritten_events, &key, 200).unwrap();
+        assert!(verify_append_only_proof(&old_cp, &rewritten_cp, &proof).is_err());
     }
 
 
