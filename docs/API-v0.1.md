@@ -106,3 +106,17 @@ A location can therefore be verified while its function remains `unknown`. AI cl
 ## Driving safety
 
 Reporting flows must not encourage photo capture or detailed interaction while driving. A moving user may create a minimal location marker; evidence/details should be completed while stopped or post-trip.
+
+
+## Evidence storage trust boundary
+
+Evidence images use two physically/logically separate trust zones:
+
+1. **Private quarantine** — original hostile upload bytes, short-lived and never publicly addressable.
+2. **Sanitized evidence** — freshly decoded/re-encoded derivatives. Only cleared sanitized derivatives may become public evidence.
+
+Public API types are explicit allowlists and MUST NOT serialize database evidence rows directly. Public responses must never contain `quarantine_object_key`, original filenames, raw metadata, contributor identifiers, moderation/abuse signals, credentials, or internal storage paths.
+
+A sanitized image delivery URL, when implemented, must be resolved server-side from the sanitized evidence record rather than exposing the underlying storage key as general evidence metadata.
+
+If sanitization or sanitized storage fails, the evidence is not eligible for verification scoring.
