@@ -8,6 +8,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use roadwatch_image_ingestion::{evaluate_upload, IngestionDecision};
+use roadwatch_image_ingestion::storage::LocalEvidenceStore;
+use std::sync::Arc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -16,6 +18,7 @@ pub const MAX_NEARBY_RADIUS_M: u32 = 5_000;
 #[derive(Clone, Default)]
 pub struct AppState {
     pub pool: Option<PgPool>,
+    pub evidence_store: Option<Arc<LocalEvidenceStore>>,
 }
 
 pub fn app() -> Router {
@@ -104,49 +107,98 @@ pub struct EvidenceUploadResponse {
 }
 
 async fn upload_evidence(
+    State(state): State<AppState>,
     Path(report_id): Path<Uuid>,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<EvidenceUploadResponse>) {
     let outcome = evaluate_upload(&body);
 
-    match outcome.decision {
-        IngestionDecision::AcceptSanitized => {
-            let image = outcome.image.expect("accepted ingestion must contain sanitized image");
-            (StatusCode::ACCEPTED, Json(EvidenceUploadResponse {
-                report_id,
-                decision: "accepted_sanitized",
-                eligible_for_scoring: true,
-                original_sha256: Some(image.original_sha256),
-                sanitized_sha256: Some(image.sanitized_sha256),
-                perceptual_hash: Some(image.perceptual_hash),
-                anomaly_flags: image.anomaly_flags,
-            }))
+    let Some(image) = outcome.image else {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(EvidenceUploadResponse {
+            report_id, decision: "rejected", eligible_for_scoring: false,
+            original_sha256: None, sanitized_sha256: None, perceptual_hash: None,
+            anomaly_flags: Vec::new(),
+        }));
+    };
+
+    let decision = match outcome.decision {
+        IngestionDecision::AcceptSanitized => "accepted_sanitized",
+        IngestionDecision::Quarantine => "quarantined",
+        IngestionDecision::Reject => "rejected",
+    };
+    let requested_eligibility = outcome.decision == IngestionDecision::AcceptSanitized;
+
+    // Without both durable storage and DB, never claim evidence is scoring-eligible.
+    let (Some(pool), Some(store)) = (state.pool, state.evidence_store) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(EvidenceUploadResponse {
+            report_id, decision: "storage_unavailable", eligible_for_scoring: false,
+            original_sha256: Some(image.original_sha256),
+            sanitized_sha256: Some(image.sanitized_sha256),
+            perceptual_hash: Some(image.perceptual_hash),
+            anomaly_flags: image.anomaly_flags,
+        }));
+    };
+
+    let sanitized = match store.put_sanitized(&image.sanitized_sha256, &image.sanitized_bytes) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(EvidenceUploadResponse {
+            report_id, decision: "storage_failed", eligible_for_scoring: false,
+            original_sha256: Some(image.original_sha256),
+            sanitized_sha256: Some(image.sanitized_sha256),
+            perceptual_hash: Some(image.perceptual_hash),
+            anomaly_flags: image.anomaly_flags,
+        })),
+    };
+
+    let quarantine = if outcome.decision == IngestionDecision::Quarantine {
+        match store.put_quarantine(&body) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                let _ = store.delete_sanitized(&sanitized.object_key);
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(EvidenceUploadResponse {
+                    report_id, decision: "quarantine_storage_failed", eligible_for_scoring: false,
+                    original_sha256: Some(image.original_sha256),
+                    sanitized_sha256: Some(image.sanitized_sha256),
+                    perceptual_hash: Some(image.perceptual_hash),
+                    anomaly_flags: image.anomaly_flags,
+                }));
+            }
         }
-        IngestionDecision::Quarantine => {
-            let image = outcome.image.expect("quarantined ingestion must contain sanitized image");
-            (StatusCode::ACCEPTED, Json(EvidenceUploadResponse {
-                report_id,
-                decision: "quarantined",
-                eligible_for_scoring: false,
-                original_sha256: Some(image.original_sha256),
-                sanitized_sha256: Some(image.sanitized_sha256),
-                perceptual_hash: Some(image.perceptual_hash),
-                anomaly_flags: image.anomaly_flags,
-            }))
+    } else { None };
+
+    let inserted = db::insert_image_evidence(&pool, db::NewEvidence {
+        report_id,
+        quarantine_object_key: quarantine.as_ref().map(|o| o.object_key.as_str()),
+        sanitized_object_key: Some(&sanitized.object_key),
+        original_sha256: &image.original_sha256,
+        sanitized_sha256: &image.sanitized_sha256,
+        perceptual_hash: image.perceptual_hash,
+        ingestion_decision: decision,
+        eligible_for_scoring: requested_eligibility,
+    }).await;
+
+    if inserted.is_err() {
+        // Compensation: quarantine names are unique and safe to remove. Sanitized
+        // content-addressed objects may be shared, so retain them for later GC.
+        if let Some(q) = quarantine {
+            let _ = store.delete_quarantine(&q.object_key);
         }
-        IngestionDecision::Reject => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(EvidenceUploadResponse {
-                report_id,
-                decision: "rejected",
-                eligible_for_scoring: false,
-                original_sha256: None,
-                sanitized_sha256: None,
-                perceptual_hash: None,
-                anomaly_flags: Vec::new(),
-            }),
-        ),
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(EvidenceUploadResponse {
+            report_id, decision: "database_failed", eligible_for_scoring: false,
+            original_sha256: Some(image.original_sha256),
+            sanitized_sha256: Some(image.sanitized_sha256),
+            perceptual_hash: Some(image.perceptual_hash),
+            anomaly_flags: image.anomaly_flags,
+        }));
     }
+
+    (StatusCode::ACCEPTED, Json(EvidenceUploadResponse {
+        report_id, decision, eligible_for_scoring: requested_eligibility,
+        original_sha256: Some(image.original_sha256),
+        sanitized_sha256: Some(image.sanitized_sha256),
+        perceptual_hash: Some(image.perceptual_hash),
+        anomaly_flags: image.anomaly_flags,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
