@@ -113,3 +113,24 @@ CREATE TABLE verification_events (
 -- quarantine_object_key, raw upload metadata, or other private moderation fields.
 -- Public image delivery must resolve sanitized_object_key server-side; object storage
 -- bucket/key details should not be serialized as evidence metadata.
+
+
+-- Q Ledger stores cryptographic commitments only. Never put private evidence,
+-- contributor identifiers, raw GPS trails, or storage keys in this table.
+CREATE TABLE q_ledger_events (
+  sequence BIGINT PRIMARY KEY CHECK (sequence >= 0),
+  event_type TEXT NOT NULL,
+  subject_commitment TEXT NOT NULL CHECK (length(subject_commitment) = 64),
+  previous_event_hash TEXT NOT NULL CHECK (length(previous_event_hash) = 64),
+  event_hash TEXT NOT NULL UNIQUE CHECK (length(event_hash) = 64),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE verification_events
+  ADD COLUMN subject_commitment TEXT CHECK (subject_commitment IS NULL OR length(subject_commitment) = 64),
+  ADD COLUMN ledger_sequence BIGINT REFERENCES q_ledger_events(sequence),
+  ADD COLUMN ledger_event_hash TEXT CHECK (ledger_event_hash IS NULL OR length(ledger_event_hash) = 64);
+
+CREATE UNIQUE INDEX verification_events_ledger_sequence_uidx
+  ON verification_events(ledger_sequence)
+  WHERE ledger_sequence IS NOT NULL;
