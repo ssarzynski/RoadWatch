@@ -385,8 +385,24 @@ pub async fn clear_expired_quarantine_reference(
     Ok(result.rows_affected())
 }
 
-pub async fn insert_image_evidence(pool: &PgPool, e: NewEvidence<'_>) -> Result<Uuid, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>(
+#[derive(Debug)]
+pub struct NewEvidenceRiskAssessment<'a> {
+    pub policy_version: &'a str,
+    pub risk_score: i16,
+    pub disposition: &'a str,
+    pub independent_weight_allowed: bool,
+    pub exact_replay_detected: bool,
+    pub perceptual_replay_detected: bool,
+    pub signals: &'a [&'a str],
+}
+
+pub async fn insert_image_evidence(
+    pool: &PgPool,
+    e: NewEvidence<'_>,
+    risk: NewEvidenceRiskAssessment<'_>,
+) -> Result<Uuid, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let evidence_id = sqlx::query_scalar::<_, Uuid>(
         r#"
         INSERT INTO evidence (
           report_id, evidence_type, quarantine_object_key, sanitized_object_key,
