@@ -66,6 +66,21 @@ CREATE INDEX reports_contributor_created_idx
   ON reports(contributor_token_hash, created_at DESC)
   WHERE contributor_token_hash IS NOT NULL;
 
+-- Append-only private moderation audit. Stores policy outcomes/signals only;
+-- never raw contributor credentials or reconstructed route history.
+CREATE TABLE report_risk_assessments (
+  assessment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id UUID NOT NULL REFERENCES reports(report_id) ON DELETE RESTRICT,
+  policy_version TEXT NOT NULL,
+  risk_score SMALLINT NOT NULL CHECK (risk_score BETWEEN 0 AND 100),
+  disposition TEXT NOT NULL CHECK (disposition IN ('normal','review','quarantine')),
+  independent_weight_allowed BOOLEAN NOT NULL,
+  signals TEXT[] NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX report_risk_report_created_idx
+  ON report_risk_assessments(report_id, created_at DESC);
+
 CREATE TABLE evidence (
   evidence_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   report_id UUID NOT NULL REFERENCES reports(report_id) ON DELETE CASCADE,
