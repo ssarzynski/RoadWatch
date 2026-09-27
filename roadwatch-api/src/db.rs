@@ -43,7 +43,7 @@ pub async fn store_report(pool: &PgPool, report: NewReport<'_>) -> Result<Stored
         r#"
         SELECT camera_id
         FROM cameras
-        WHERE status NOT IN ('removed')
+        WHERE status NOT IN ('removed', 'removed_pending')
           AND ST_DWithin(
             location,
             ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
