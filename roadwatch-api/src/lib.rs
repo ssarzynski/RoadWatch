@@ -9,6 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use roadwatch_image_ingestion::{evaluate_upload, IngestionDecision};
 use roadwatch_image_ingestion::storage::LocalEvidenceStore;
+use roadwatch_verification::risk::{self, PriorObservation, RiskInput};
 use std::sync::Arc;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -106,6 +107,15 @@ pub struct EvidenceUploadResponse {
     pub anomaly_flags: Vec<&'static str>,
 }
 
+
+fn perceptual_replay(current: u64, stored: &[String]) -> bool {
+    stored.iter().any(|value| {
+        u64::from_str_radix(value, 16)
+            .map(|prior| roadwatch_image_ingestion::perceptual_distance(current, prior) <= 6)
+            .unwrap_or(false)
+    })
+}
+
 async fn upload_evidence(
     State(state): State<AppState>,
     Path(report_id): Path<Uuid>,
@@ -166,6 +176,31 @@ async fn upload_evidence(
         }
     } else { None };
 
+    // Risk screening uses server-held history and stored evidence. It cannot
+    // declare malice; it only controls independence/review disposition.
+    let exact_replay = db::exact_image_replay_exists(&pool, &image.original_sha256, report_id)
+        .await
+        .unwrap_or(true);
+    let stored_hashes = db::recent_perceptual_hashes(&pool, report_id, 500)
+        .await
+        .unwrap_or_default();
+    let perceptual_replay = perceptual_replay(image.perceptual_hash, &stored_hashes);
+
+    // Contributor correlation will become active once pseudonymous contributor
+    // tokens are accepted and stored by the report endpoint. Until then we do
+    // not invent a device identity or claim independence from device history.
+    let risk = risk::assess(&RiskInput {
+        latitude: 0.0,
+        longitude: 0.0,
+        received_at: 0,
+        reports_last_hour: 0,
+        exact_image_replay: exact_replay,
+        perceptual_image_replay: perceptual_replay,
+        correlated_source_count: 0,
+        prior: None::<&PriorObservation>,
+    });
+    let risk_allows_scoring = risk.independent_weight_allowed;
+
     let inserted = db::insert_image_evidence(&pool, db::NewEvidence {
         report_id,
         quarantine_object_key: quarantine.as_ref().map(|o| o.object_key.as_str()),
@@ -174,7 +209,7 @@ async fn upload_evidence(
         sanitized_sha256: &image.sanitized_sha256,
         perceptual_hash: image.perceptual_hash,
         ingestion_decision: decision,
-        eligible_for_scoring: requested_eligibility,
+        eligible_for_scoring: requested_eligibility && risk_allows_scoring,
     }).await;
 
     if inserted.is_err() {
@@ -193,7 +228,7 @@ async fn upload_evidence(
     }
 
     (StatusCode::ACCEPTED, Json(EvidenceUploadResponse {
-        report_id, decision, eligible_for_scoring: requested_eligibility,
+        report_id, decision, eligible_for_scoring: requested_eligibility && risk_allows_scoring,
         original_sha256: Some(image.original_sha256),
         sanitized_sha256: Some(image.sanitized_sha256),
         perceptual_hash: Some(image.perceptual_hash),
