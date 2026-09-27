@@ -183,10 +183,6 @@ pub struct EvidenceUploadResponse {
     pub report_id: Uuid,
     pub decision: &'static str,
     pub eligible_for_scoring: bool,
-    pub original_sha256: Option<String>,
-    pub sanitized_sha256: Option<String>,
-    pub perceptual_hash: Option<u64>,
-    pub anomaly_flags: Vec<&'static str>,
 }
 
 
@@ -208,8 +204,6 @@ async fn upload_evidence(
     let Some(image) = outcome.image else {
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(EvidenceUploadResponse {
             report_id, decision: "rejected", eligible_for_scoring: false,
-            original_sha256: None, sanitized_sha256: None, perceptual_hash: None,
-            anomaly_flags: Vec::new(),
         }));
     };
 
@@ -224,10 +218,6 @@ async fn upload_evidence(
     let (Some(pool), Some(store)) = (state.pool, state.evidence_store) else {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(EvidenceUploadResponse {
             report_id, decision: "storage_unavailable", eligible_for_scoring: false,
-            original_sha256: Some(image.original_sha256),
-            sanitized_sha256: Some(image.sanitized_sha256),
-            perceptual_hash: Some(image.perceptual_hash),
-            anomaly_flags: image.anomaly_flags,
         }));
     };
 
@@ -235,10 +225,6 @@ async fn upload_evidence(
         Ok(v) => v,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(EvidenceUploadResponse {
             report_id, decision: "storage_failed", eligible_for_scoring: false,
-            original_sha256: Some(image.original_sha256),
-            sanitized_sha256: Some(image.sanitized_sha256),
-            perceptual_hash: Some(image.perceptual_hash),
-            anomaly_flags: image.anomaly_flags,
         })),
     };
 
@@ -249,10 +235,6 @@ async fn upload_evidence(
                 let _ = store.delete_sanitized(&sanitized.object_key);
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(EvidenceUploadResponse {
                     report_id, decision: "quarantine_storage_failed", eligible_for_scoring: false,
-                    original_sha256: Some(image.original_sha256),
-                    sanitized_sha256: Some(image.sanitized_sha256),
-                    perceptual_hash: Some(image.perceptual_hash),
-                    anomaly_flags: image.anomaly_flags,
                 }));
             }
         }
@@ -302,19 +284,11 @@ async fn upload_evidence(
         }
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(EvidenceUploadResponse {
             report_id, decision: "database_failed", eligible_for_scoring: false,
-            original_sha256: Some(image.original_sha256),
-            sanitized_sha256: Some(image.sanitized_sha256),
-            perceptual_hash: Some(image.perceptual_hash),
-            anomaly_flags: image.anomaly_flags,
         }));
     }
 
     (StatusCode::ACCEPTED, Json(EvidenceUploadResponse {
         report_id, decision, eligible_for_scoring: requested_eligibility && risk_allows_scoring,
-        original_sha256: Some(image.original_sha256),
-        sanitized_sha256: Some(image.sanitized_sha256),
-        perceptual_hash: Some(image.perceptual_hash),
-        anomaly_flags: image.anomaly_flags,
     }))
 }
 
