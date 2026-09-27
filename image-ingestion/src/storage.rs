@@ -50,6 +50,17 @@ impl LocalEvidenceStore {
         Ok(StoredObject { object_key: key })
     }
 
+    pub fn delete_sanitized(&self, object_key: &str) -> io::Result<()> {
+        if !valid_sha256_hex(object_key) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid sanitized key"));
+        }
+        match fs::remove_file(self.sanitized_root.join(object_key)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn delete_quarantine(&self, object_key: &str) -> io::Result<()> {
         if !valid_uuid_key(object_key) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid quarantine key"));
