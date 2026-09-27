@@ -104,6 +104,43 @@ pub struct NewEvidence<'a> {
     pub eligible_for_scoring: bool,
 }
 
+
+pub async fn quarantine_key_is_referenced(pool: &PgPool, key: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM evidence WHERE quarantine_object_key = $1)"
+    )
+    .bind(key)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn sanitized_key_is_referenced(pool: &PgPool, key: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM evidence WHERE sanitized_object_key = $1)"
+    )
+    .bind(key)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn clear_expired_quarantine_reference(
+    pool: &PgPool,
+    key: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        UPDATE evidence
+        SET quarantine_object_key = NULL
+        WHERE quarantine_object_key = $1
+          AND created_at < now() - interval '7 days'
+        "#,
+    )
+    .bind(key)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub async fn insert_image_evidence(pool: &PgPool, e: NewEvidence<'_>) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
         r#"
