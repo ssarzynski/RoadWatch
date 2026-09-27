@@ -144,6 +144,91 @@ pub fn verify_checkpoint(checkpoint: &SignedCheckpoint) -> Result<(), LedgerErro
         .map_err(|_| LedgerError::VerificationFailed)
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WitnessStatement {
+    pub checkpoint_tree_size: u64,
+    pub checkpoint_merkle_root: String,
+    pub checkpoint_signature: String,
+    pub witness_public_key: String,
+    pub witnessed_at_unix: i64,
+    pub witness_signature: String,
+}
+
+fn witness_message(checkpoint: &SignedCheckpoint, witnessed_at_unix: i64) -> Vec<u8> {
+    format!(
+        "roadwatch-q-ledger-witness-v1\n{}\n{}\n{}\n{}\n",
+        checkpoint.tree_size,
+        checkpoint.merkle_root,
+        checkpoint.signature,
+        witnessed_at_unix
+    )
+    .into_bytes()
+}
+
+pub fn verify_checkpoint_against_events(
+    events: &[LedgerEvent],
+    checkpoint: &SignedCheckpoint,
+) -> Result<(), LedgerError> {
+    if !verify_chain(events)? || checkpoint.tree_size != events.len() as u64 {
+        return Err(LedgerError::VerificationFailed);
+    }
+    let hashes: Result<Vec<_>, _> = events.iter().map(event_hash).collect();
+    let hashes = hashes?;
+    let expected_root = hex_hash(merkle_root(&hashes));
+    let expected_last = hex_hash(hashes.last().copied().unwrap_or(GENESIS_PREVIOUS_HASH));
+    if checkpoint.merkle_root != expected_root || checkpoint.last_event_hash != expected_last {
+        return Err(LedgerError::VerificationFailed);
+    }
+    verify_checkpoint(checkpoint)
+}
+
+pub fn witness_checkpoint(
+    events: &[LedgerEvent],
+    checkpoint: &SignedCheckpoint,
+    witness_key: &SigningKey,
+    witnessed_at_unix: i64,
+) -> Result<WitnessStatement, LedgerError> {
+    verify_checkpoint_against_events(events, checkpoint)?;
+    let msg = witness_message(checkpoint, witnessed_at_unix);
+    let signature = witness_key.sign(&msg);
+    Ok(WitnessStatement {
+        checkpoint_tree_size: checkpoint.tree_size,
+        checkpoint_merkle_root: checkpoint.merkle_root.clone(),
+        checkpoint_signature: checkpoint.signature.clone(),
+        witness_public_key: hex::encode(witness_key.verifying_key().to_bytes()),
+        witnessed_at_unix,
+        witness_signature: hex::encode(signature.to_bytes()),
+    })
+}
+
+pub fn verify_witness(
+    checkpoint: &SignedCheckpoint,
+    statement: &WitnessStatement,
+) -> Result<(), LedgerError> {
+    if statement.checkpoint_tree_size != checkpoint.tree_size
+        || statement.checkpoint_merkle_root != checkpoint.merkle_root
+        || statement.checkpoint_signature != checkpoint.signature
+    {
+        return Err(LedgerError::VerificationFailed);
+    }
+    let pk: [u8; 32] = hex::decode(&statement.witness_public_key)
+        .map_err(|_| LedgerError::InvalidHex)?
+        .try_into()
+        .map_err(|_| LedgerError::InvalidPublicKey)?;
+    let sig: [u8; 64] = hex::decode(&statement.witness_signature)
+        .map_err(|_| LedgerError::InvalidHex)?
+        .try_into()
+        .map_err(|_| LedgerError::InvalidSignature)?;
+    let key = VerifyingKey::from_bytes(&pk).map_err(|_| LedgerError::InvalidPublicKey)?;
+    let signature = Signature::from_bytes(&sig);
+    key.verify(
+        &witness_message(checkpoint, statement.witnessed_at_unix),
+        &signature,
+    )
+    .map_err(|_| LedgerError::VerificationFailed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,4 +269,21 @@ mod tests {
         checkpoint.tree_size += 1;
         assert!(verify_checkpoint(&checkpoint).is_err());
     }
+    #[test]
+    fn independent_witness_verifies_checkpoint_and_detects_substitution() {
+        let log_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let witness_key = SigningKey::from_bytes(&[9_u8; 32]);
+        let first = event(0, GENESIS_PREVIOUS_HASH, "a");
+        let events = vec![first];
+        let checkpoint = sign_checkpoint(&events, &log_key, 1_700_000_100).unwrap();
+        let statement =
+            witness_checkpoint(&events, &checkpoint, &witness_key, 1_700_000_120).unwrap();
+        verify_witness(&checkpoint, &statement).unwrap();
+
+        let mut substituted = checkpoint.clone();
+        substituted.merkle_root = hex_hash(sha256(b"substitution"));
+        assert!(verify_witness(&substituted, &statement).is_err());
+    }
+
+
 }
