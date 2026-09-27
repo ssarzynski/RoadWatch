@@ -70,3 +70,24 @@ potential log growth, not as proven consistency.
 
 The next protocol revision should add Merkle consistency proofs so witnesses can verify
 that a newer root is an append-only extension of a previously witnessed root.
+
+
+## Append-only consistency proofs — v0.1
+
+Q Ledger now has a conservative append-only proof format. A proof carries the committed
+leaf hashes for the previously witnessed prefix plus the appended suffix. A verifier:
+
+1. verifies both signed checkpoints,
+2. requires the same log signing key,
+3. reconstructs the old Merkle root from the old prefix,
+4. requires it to equal the previously witnessed root,
+5. reconstructs the new root from that exact prefix plus the suffix,
+6. requires it to equal the new signed root, and
+7. checks the old and new final event hashes.
+
+A rewritten prefix therefore cannot validate as an append-only extension.
+
+This v0.1 format is intentionally not bandwidth-optimal. Proof size is O(n), whereas a
+production transparency log should eventually use a standard logarithmic Merkle
+consistency proof. We prefer a straightforward implementation that can be locally tested
+and audited before introducing a more compact algorithm.
