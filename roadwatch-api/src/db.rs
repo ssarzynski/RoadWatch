@@ -1,3 +1,5 @@
+use roadwatch_q_ledger::{event_hash, hex_hash, LedgerEvent, GENESIS_PREVIOUS_HASH};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -112,6 +114,113 @@ pub struct ContributorRiskFacts {
     pub prior_latitude: Option<f64>,
     pub prior_longitude: Option<f64>,
     pub prior_received_unix: Option<i64>,
+}
+
+
+#[derive(Debug)]
+pub struct NewVerificationEvent<'a> {
+    pub camera_id: Uuid,
+    pub prior_status: Option<&'a str>,
+    pub new_status: &'a str,
+    pub presence_score_before: Option<i16>,
+    pub presence_score_after: Option<i16>,
+    pub classification_score_before: Option<i16>,
+    pub classification_score_after: Option<i16>,
+    pub rule_version: &'a str,
+    /// Canonical JSON bytes of the private verification event.
+    pub canonical_private_record: &'a [u8],
+}
+
+pub async fn insert_verification_event_with_ledger(
+    pool: &PgPool,
+    v: NewVerificationEvent<'_>,
+) -> Result<(Uuid, i64, String), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Serialize ledger appends. This is intentionally simple for v0.1 and can
+    // later move to a dedicated sequencer while preserving the event format.
+    sqlx::query("SELECT pg_advisory_xact_lock(82473301)")
+        .execute(&mut *tx)
+        .await?;
+
+    let subject_commitment = format!("{:x}", Sha256::digest(v.canonical_private_record));
+
+    let prior = sqlx::query_as::<_, (i64, String)>(
+        "SELECT sequence, event_hash FROM q_ledger_events ORDER BY sequence DESC LIMIT 1"
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let (sequence, previous_event_hash) = match prior {
+        Some((seq, hash)) => (seq + 1, hash),
+        None => (0, hex_hash(GENESIS_PREVIOUS_HASH)),
+    };
+
+    let recorded_at_unix = sqlx::query_scalar::<_, i64>(
+        "SELECT extract(epoch from clock_timestamp())::bigint"
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let ledger_event = LedgerEvent {
+        sequence: sequence as u64,
+        event_type: "verification_event".to_owned(),
+        subject_commitment: subject_commitment.clone(),
+        previous_event_hash: previous_event_hash.clone(),
+        recorded_at_unix,
+    };
+    let ledger_hash = hex_hash(
+        event_hash(&ledger_event).map_err(|e| sqlx::Error::Protocol(e.to_string()))?
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO q_ledger_events
+          (sequence, event_type, subject_commitment, previous_event_hash, event_hash, recorded_at)
+        VALUES ($1, $2, $3, $4, $5, to_timestamp($6))
+        "#,
+    )
+    .bind(sequence)
+    .bind(&ledger_event.event_type)
+    .bind(&subject_commitment)
+    .bind(&previous_event_hash)
+    .bind(&ledger_hash)
+    .bind(recorded_at_unix)
+    .execute(&mut *tx)
+    .await?;
+
+    let verification_id = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        INSERT INTO verification_events (
+          camera_id, prior_status, new_status,
+          presence_score_before, presence_score_after,
+          classification_score_before, classification_score_after,
+          rule_version, explanation,
+          subject_commitment, ledger_sequence, ledger_event_hash
+        )
+        VALUES (
+          $1, $2::camera_status, $3::camera_status,
+          $4, $5, $6, $7, $8, '{}'::jsonb, $9, $10, $11
+        )
+        RETURNING event_id
+        "#,
+    )
+    .bind(v.camera_id)
+    .bind(v.prior_status)
+    .bind(v.new_status)
+    .bind(v.presence_score_before)
+    .bind(v.presence_score_after)
+    .bind(v.classification_score_before)
+    .bind(v.classification_score_after)
+    .bind(v.rule_version)
+    .bind(&subject_commitment)
+    .bind(sequence)
+    .bind(&ledger_hash)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok((verification_id, sequence, ledger_hash))
 }
 
 pub async fn contributor_risk_facts(
