@@ -108,6 +108,22 @@ CREATE INDEX evidence_perceptual_hash_created_idx
   ON evidence(perceptual_hash, created_at DESC)
   WHERE perceptual_hash IS NOT NULL;
 
+-- Append-only private audit of evidence anti-replay/moderation decisions.
+CREATE TABLE evidence_risk_assessments (
+  assessment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  evidence_id UUID NOT NULL REFERENCES evidence(evidence_id) ON DELETE RESTRICT,
+  policy_version TEXT NOT NULL,
+  risk_score SMALLINT NOT NULL CHECK (risk_score BETWEEN 0 AND 100),
+  disposition TEXT NOT NULL CHECK (disposition IN ('normal','review','quarantine')),
+  independent_weight_allowed BOOLEAN NOT NULL,
+  exact_replay_detected BOOLEAN NOT NULL DEFAULT false,
+  perceptual_replay_detected BOOLEAN NOT NULL DEFAULT false,
+  signals TEXT[] NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX evidence_risk_evidence_created_idx
+  ON evidence_risk_assessments(evidence_id, created_at DESC);
+
 CREATE TABLE observations (
   observation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   camera_id UUID NOT NULL REFERENCES cameras(camera_id),
