@@ -1,7 +1,7 @@
 pub mod db;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::HeaderMap,
     http::StatusCode,
     routing::{get, post},
@@ -10,7 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use roadwatch_image_ingestion::{evaluate_upload, IngestionDecision};
+use roadwatch_image_ingestion::{evaluate_upload, IngestionDecision, MAX_UPLOAD_BYTES};
 use roadwatch_image_ingestion::storage::LocalEvidenceStore;
 use roadwatch_verification::risk::{self, PriorObservation, RiskInput};
 use std::sync::Arc;
@@ -52,7 +52,10 @@ pub fn app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/reports", post(create_report))
-        .route("/v1/reports/{report_id}/evidence", post(upload_evidence))
+        .route(
+            "/v1/reports/{report_id}/evidence",
+            post(upload_evidence).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
         .route("/v1/cameras/nearby", get(nearby_cameras))
         .with_state(state)
 }
