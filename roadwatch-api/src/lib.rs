@@ -2,11 +2,13 @@ pub mod db;
 
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use roadwatch_image_ingestion::{evaluate_upload, IngestionDecision};
 use roadwatch_image_ingestion::storage::LocalEvidenceStore;
 use roadwatch_verification::risk::{self, PriorObservation, RiskInput};
@@ -24,6 +26,21 @@ pub struct AppState {
 
 pub fn app() -> Router {
     app_with_state(AppState::default())
+}
+
+
+const CONTRIBUTOR_TOKEN_MIN_LEN: usize = 32;
+const CONTRIBUTOR_TOKEN_MAX_LEN: usize = 128;
+
+pub fn contributor_token_hash(raw: &str) -> Option<String> {
+    if raw.len() < CONTRIBUTOR_TOKEN_MIN_LEN
+        || raw.len() > CONTRIBUTOR_TOKEN_MAX_LEN
+        || !raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    let digest = Sha256::digest(raw.as_bytes());
+    Some(format!("{digest:x}"))
 }
 
 pub fn app_with_state(state: AppState) -> Router {
@@ -56,6 +73,7 @@ pub struct AcceptedReport {
 
 async fn create_report(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(report): Json<CreateReport>,
 ) -> Result<(StatusCode, Json<AcceptedReport>), (StatusCode, Json<ApiError>)> {
     validate_coordinates(report.latitude, report.longitude)?;
@@ -378,4 +396,20 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["status"], "accepted_unverified_not_persisted");
     }
+    #[test]
+    fn contributor_token_is_hashed_and_raw_value_is_not_returned() {
+        let raw = "A234567890123456789012345678901234567890123";
+        let hash = contributor_token_hash(raw).unwrap();
+        assert_eq!(hash.len(), 64);
+        assert_ne!(hash, raw);
+    }
+
+    #[test]
+    fn contributor_token_rejects_short_or_pathological_values() {
+        assert!(contributor_token_hash("short").is_none());
+        assert!(contributor_token_hash(&"x".repeat(129)).is_none());
+        assert!(contributor_token_hash("this token contains spaces and is long enough").is_none());
+    }
+
+
 }
