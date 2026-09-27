@@ -91,6 +91,43 @@ pub async fn store_report(pool: &PgPool, report: NewReport<'_>) -> Result<Stored
     Ok(StoredReport { report_id, candidate_camera_ids: candidates })
 }
 
+
+#[derive(Debug)]
+pub struct NewEvidence<'a> {
+    pub report_id: Uuid,
+    pub quarantine_object_key: Option<&'a str>,
+    pub sanitized_object_key: Option<&'a str>,
+    pub original_sha256: &'a str,
+    pub sanitized_sha256: &'a str,
+    pub perceptual_hash: u64,
+    pub ingestion_decision: &'a str,
+    pub eligible_for_scoring: bool,
+}
+
+pub async fn insert_image_evidence(pool: &PgPool, e: NewEvidence<'_>) -> Result<Uuid, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>(
+        r#"
+        INSERT INTO evidence (
+          report_id, evidence_type, quarantine_object_key, sanitized_object_key,
+          original_sha256, sanitized_sha256, perceptual_hash,
+          ingestion_decision, eligible_for_scoring, metadata_stripped
+        )
+        VALUES ($1, 'photo', $2, $3, $4, $5, $6, $7, $8, true)
+        RETURNING evidence_id
+        "#,
+    )
+    .bind(e.report_id)
+    .bind(e.quarantine_object_key)
+    .bind(e.sanitized_object_key)
+    .bind(e.original_sha256)
+    .bind(e.sanitized_sha256)
+    .bind(format!("{:016x}", e.perceptual_hash))
+    .bind(e.ingestion_decision)
+    .bind(e.eligible_for_scoring)
+    .fetch_one(pool)
+    .await
+}
+
 pub async fn nearby(pool: &PgPool, lat: f64, lon: f64, radius_m: u32) -> Result<Vec<CameraRow>, sqlx::Error> {
     let rows = sqlx::query(
         r#"
