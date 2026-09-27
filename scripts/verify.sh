@@ -9,13 +9,18 @@ command -v cargo >/dev/null 2>&1 || {
   exit 1
 }
 
-echo "[1/3] rustfmt"
-cargo fmt --manifest-path verification-engine/Cargo.toml -- --check
+verify_crate() {
+  local manifest="$1"
+  local name="$2"
+  echo
+  echo "== $name =="
+  cargo fmt --manifest-path "$manifest" -- --check
+  cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
+  cargo test --manifest-path "$manifest"
+}
 
-echo "[2/3] clippy"
-cargo clippy --manifest-path verification-engine/Cargo.toml --all-targets -- -D warnings
+verify_crate verification-engine/Cargo.toml "verification engine"
+verify_crate roadwatch-api/Cargo.toml "RoadWatch API"
 
-echo "[3/3] tests"
-cargo test --manifest-path verification-engine/Cargo.toml
-
-echo "PASS: RoadWatch verification-engine checks completed."
+echo
+echo "PASS: RoadWatch local checks completed."
