@@ -1,6 +1,8 @@
 //! Deterministic RoadWatch verification policy.
 //! AI classifiers may provide advisory evidence, but cannot independently verify a camera.
 
+pub mod candidate;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceKind {
     FieldObservation,
