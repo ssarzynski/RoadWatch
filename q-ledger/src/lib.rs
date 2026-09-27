@@ -229,6 +229,40 @@ pub fn verify_witness(
     .map_err(|_| LedgerError::VerificationFailed)
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckpointComparison {
+    Identical,
+    SameLogGrowth,
+    Equivocation,
+    DifferentSigner,
+}
+
+pub fn compare_checkpoints(
+    trusted: &SignedCheckpoint,
+    observed: &SignedCheckpoint,
+) -> Result<CheckpointComparison, LedgerError> {
+    verify_checkpoint(trusted)?;
+    verify_checkpoint(observed)?;
+
+    if trusted.public_key != observed.public_key {
+        return Ok(CheckpointComparison::DifferentSigner);
+    }
+
+    if trusted.tree_size == observed.tree_size {
+        if trusted.merkle_root == observed.merkle_root
+            && trusted.last_event_hash == observed.last_event_hash
+        {
+            return Ok(CheckpointComparison::Identical);
+        }
+        return Ok(CheckpointComparison::Equivocation);
+    }
+
+    // Different sizes are not themselves proof of consistency. A future
+    // consistency proof must establish append-only growth between roots.
+    Ok(CheckpointComparison::SameLogGrowth)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +317,33 @@ mod tests {
         let mut substituted = checkpoint.clone();
         substituted.merkle_root = hex_hash(sha256(b"substitution"));
         assert!(verify_witness(&substituted, &statement).is_err());
+    }
+
+
+    #[test]
+    fn same_signer_same_size_different_valid_roots_is_equivocation() {
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let a = event(0, GENESIS_PREVIOUS_HASH, "history-a");
+        let b = event(0, GENESIS_PREVIOUS_HASH, "history-b");
+        let checkpoint_a = sign_checkpoint(&[a], &key, 1_700_000_100).unwrap();
+        let checkpoint_b = sign_checkpoint(&[b], &key, 1_700_000_101).unwrap();
+        assert_eq!(
+            compare_checkpoints(&checkpoint_a, &checkpoint_b).unwrap(),
+            CheckpointComparison::Equivocation
+        );
+    }
+
+    #[test]
+    fn different_signers_are_not_called_equivocation() {
+        let key_a = SigningKey::from_bytes(&[7_u8; 32]);
+        let key_b = SigningKey::from_bytes(&[8_u8; 32]);
+        let event = event(0, GENESIS_PREVIOUS_HASH, "same");
+        let a = sign_checkpoint(&[event.clone()], &key_a, 1_700_000_100).unwrap();
+        let b = sign_checkpoint(&[event], &key_b, 1_700_000_100).unwrap();
+        assert_eq!(
+            compare_checkpoints(&a, &b).unwrap(),
+            CheckpointComparison::DifferentSigner
+        );
     }
 
 
