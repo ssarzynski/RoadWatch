@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
+roadwatch-q-ledger = { path = "../q-ledger" }
 roadwatch-verification = { path = "../verification-engine" }
 roadwatch-image-ingestion = { path = "../image-ingestion" }
 axum = "0.8"
