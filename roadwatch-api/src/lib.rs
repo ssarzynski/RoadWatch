@@ -149,10 +149,6 @@ async fn create_report(
         None
     };
 
-    // Risk signals trigger review / loss of independent weight; they do not
-    // automatically delete or reject an otherwise valid public observation.
-    let _report_risk = report_risk;
-
     let Some(pool) = state.pool else {
         return Ok((StatusCode::ACCEPTED, Json(AcceptedReport {
             report_id: Uuid::new_v4(),
@@ -161,15 +157,36 @@ async fn create_report(
         })));
     };
 
-    let stored = db::store_report(&pool, db::NewReport {
-        contributor_token_hash: contributor_hash,
-        latitude: report.latitude,
-        longitude: report.longitude,
-        bearing_degrees: report.bearing_degrees.map(|b| b as i16),
-        claimed_function,
-        claimed_manufacturer: report.claimed_manufacturer.as_deref(),
-        observed_at: report.observed_at.as_deref(),
-    }).await.map_err(|_| internal_error("database write failed"))?;
+    let risk_record = report_risk.as_ref().map(|assessment| {
+        let disposition = match assessment.disposition {
+            risk::ReviewDisposition::Normal => "normal",
+            risk::ReviewDisposition::Review => "review",
+            risk::ReviewDisposition::Quarantine => "quarantine",
+        };
+        db::NewReportRiskAssessment {
+            policy_version: "report-risk-v0.1",
+            risk_score: i16::from(assessment.score),
+            disposition,
+            independent_weight_allowed: assessment.independent_weight_allowed,
+            signals: &assessment.signals,
+        }
+    });
+
+    let stored = db::store_report(
+        &pool,
+        db::NewReport {
+            contributor_token_hash: contributor_hash,
+            latitude: report.latitude,
+            longitude: report.longitude,
+            bearing_degrees: report.bearing_degrees.map(|b| b as i16),
+            claimed_function,
+            claimed_manufacturer: report.claimed_manufacturer.as_deref(),
+            observed_at: report.observed_at.as_deref(),
+        },
+        risk_record,
+    )
+    .await
+    .map_err(|_| internal_error("database write failed"))?;
 
     Ok((StatusCode::ACCEPTED, Json(AcceptedReport {
         report_id: stored.report_id,
