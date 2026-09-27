@@ -259,18 +259,20 @@ async fn upload_evidence(
 
     // Risk screening uses server-held history and stored evidence. It cannot
     // declare malice; it only controls independence/review disposition.
-    let exact_replay = db::exact_image_replay_exists(&pool, &image.original_sha256, report_id)
-        .await
-        .unwrap_or(true);
-    let stored_hashes = db::recent_perceptual_hashes(&pool, report_id, 500)
-        .await
-        .unwrap_or_default();
-    let perceptual_replay = perceptual_replay(image.perceptual_hash, &stored_hashes);
+    let exact_result =
+        db::exact_image_replay_exists(&pool, &image.original_sha256, report_id).await;
+    let perceptual_result = db::recent_perceptual_hashes(&pool, report_id, 500).await;
+    let risk_evaluation_incomplete = exact_result.is_err() || perceptual_result.is_err();
+    let exact_replay = exact_result.unwrap_or(false);
+    let perceptual_replay = perceptual_result
+        .as_ref()
+        .map(|stored| perceptual_replay(image.perceptual_hash, stored))
+        .unwrap_or(false);
 
-    // Contributor correlation will become active once pseudonymous contributor
-    // tokens are accepted and stored by the report endpoint. Until then we do
-    // not invent a device identity or claim independence from device history.
-    let risk = risk::assess(&RiskInput {
+    // Infrastructure failure is not evidence of abuse. Retain the observation
+    // for review, but do not grant independent evidentiary weight until the
+    // anti-replay checks have completed successfully.
+    let mut risk = risk::assess(&RiskInput {
         latitude: 0.0,
         longitude: 0.0,
         received_at: 0,
@@ -280,6 +282,13 @@ async fn upload_evidence(
         correlated_source_count: 0,
         prior: None::<&PriorObservation>,
     });
+    if risk_evaluation_incomplete {
+        risk.independent_weight_allowed = false;
+        if risk.disposition == risk::ReviewDisposition::Normal {
+            risk.disposition = risk::ReviewDisposition::Review;
+        }
+        risk.signals.push("risk_evaluation_incomplete");
+    }
     let risk_allows_scoring = risk.independent_weight_allowed;
 
     let risk_disposition = match risk.disposition {
