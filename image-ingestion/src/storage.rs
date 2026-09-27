@@ -182,7 +182,7 @@ mod tests {
     fn sanitized_storage_is_content_addressed() {
         let (q, s, base) = temp_roots();
         let store = LocalEvidenceStore::new(&q, &s).unwrap();
-        let hash = "a".repeat(64);
+        let hash = format!("{:x}", Sha256::digest(b"clean"));
         let object = store.put_sanitized(&hash, b"clean").unwrap();
         assert_eq!(object.object_key, hash);
         assert_eq!(fs::read(s.join(&object.object_key)).unwrap(), b"clean");
