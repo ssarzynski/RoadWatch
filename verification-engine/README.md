@@ -39,3 +39,23 @@ bash scripts/verify.sh
 ```
 
 This runs formatting, Clippy with warnings denied, and tests for the verification engine and API.
+
+
+## Report abuse/risk screening
+
+The verification crate also contains a deterministic risk screen for hostile or compromised clients. This is deliberately separate from evidence verification.
+
+Initial signals:
+- exact image replay
+- perceptual image replay
+- elevated/extreme submission rate
+- correlated source submissions
+- impossible travel based on server receipt time
+
+Outputs:
+- policy risk score 0–100 (**not** a probability of abuse)
+- Normal / Review / Quarantine disposition
+- whether the submission may count as independent corroboration
+- machine-readable reason signals
+
+Risk signals do not declare a contributor malicious, automatically ban a user, or delete evidence. Their purpose is to prevent suspicious/correlated input from manufacturing independent verification weight and to route anomalous evidence for review.
