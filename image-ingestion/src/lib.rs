@@ -114,9 +114,24 @@ pub fn ingest(input: &[u8]) -> Result<SanitizedImage, IngestError> {
     let original_sha256 = sha256_hex(input);
     let format = detect_format(input)?;
 
-    let reader = ImageReader::new(Cursor::new(input))
+    // Read container dimensions before allocating the full decoded pixel buffer.
+    // This rejects compressed dimension bombs before expensive decode.
+    let dimension_reader = ImageReader::new(Cursor::new(input))
         .with_guessed_format()
         .map_err(|_| IngestError::DecodeFailed)?;
+    let (width, height) = dimension_reader
+        .into_dimensions()
+        .map_err(|_| IngestError::DecodeFailed)?;
+    validate_dimension_values(width, height)?;
+
+    // Apply the image crate's decoder allocation limit as a second resource
+    // boundary. The pixel/dimension policy above remains the primary limit.
+    let mut reader = ImageReader::new(Cursor::new(input))
+        .with_guessed_format()
+        .map_err(|_| IngestError::DecodeFailed)?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_PIXELS.saturating_mul(4));
+    reader.limits(limits);
     let image = reader.decode().map_err(|_| IngestError::DecodeFailed)?;
     validate_dimensions(&image)?;
 
@@ -159,9 +174,10 @@ fn detect_format(input: &[u8]) -> Result<AcceptedFormat, IngestError> {
     }
 }
 
-fn validate_dimensions(image: &DynamicImage) -> Result<(), IngestError> {
-    let (width, height) = image.dimensions();
-    let pixels = u64::from(width) * u64::from(height);
+fn validate_dimension_values(width: u32, height: u32) -> Result<(), IngestError> {
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or(IngestError::DimensionsExceeded)?;
     if width == 0
         || height == 0
         || width > MAX_WIDTH
@@ -171,6 +187,10 @@ fn validate_dimensions(image: &DynamicImage) -> Result<(), IngestError> {
         return Err(IngestError::DimensionsExceeded);
     }
     Ok(())
+}
+
+fn validate_dimensions(image: &DynamicImage) -> Result<(), IngestError> {
+    validate_dimension_values(image.width(), image.height())
 }
 
 /// Lightweight anomaly indicators only. These cannot establish whether hidden
@@ -311,4 +331,18 @@ mod tests {
         let input = vec![0_u8; MAX_UPLOAD_BYTES + 1];
         assert!(matches!(ingest(&input), Err(IngestError::TooLarge)));
     }
+    #[test]
+    fn dimension_policy_rejects_before_pixel_decode_boundary() {
+        assert!(matches!(
+            validate_dimension_values(MAX_WIDTH + 1, 1),
+            Err(IngestError::DimensionsExceeded)
+        ));
+        assert!(matches!(
+            validate_dimension_values(8_000, 8_000),
+            Err(IngestError::DimensionsExceeded)
+        ));
+        assert!(validate_dimension_values(4_000, 4_000).is_ok());
+    }
+
+
 }
