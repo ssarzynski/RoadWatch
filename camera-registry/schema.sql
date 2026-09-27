@@ -68,9 +68,16 @@ CREATE TABLE evidence (
   report_id UUID NOT NULL REFERENCES reports(report_id) ON DELETE CASCADE,
   source_id UUID REFERENCES sources(source_id),
   evidence_type TEXT NOT NULL,
-  private_object_uri TEXT,
-  sha256 TEXT,
+  -- Private quarantine key is server-internal and MUST NEVER be serialized by public APIs.
+  quarantine_object_key TEXT,
+  -- Sanitized derivative is the only image object eligible for public serving.
+  sanitized_object_key TEXT,
+  original_sha256 TEXT,
+  sanitized_sha256 TEXT,
   perceptual_hash TEXT,
+  ingestion_decision TEXT NOT NULL DEFAULT 'pending'
+    CHECK (ingestion_decision IN ('pending','accepted_sanitized','quarantined','rejected')),
+  eligible_for_scoring BOOLEAN NOT NULL DEFAULT false,
   metadata_stripped BOOLEAN NOT NULL DEFAULT false,
   captured_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -103,4 +110,6 @@ CREATE TABLE verification_events (
 );
 
 -- Public API responses must never expose contributor_token_hash,
--- private_object_uri, raw upload metadata, or other private moderation fields.
+-- quarantine_object_key, raw upload metadata, or other private moderation fields.
+-- Public image delivery must resolve sanitized_object_key server-side; object storage
+-- bucket/key details should not be serialized as evidence metadata.
