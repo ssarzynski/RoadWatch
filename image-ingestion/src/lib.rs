@@ -32,6 +32,63 @@ pub enum AcceptedFormat {
     Png,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestionDecision {
+    AcceptSanitized,
+    Quarantine,
+    Reject,
+}
+
+#[derive(Debug)]
+pub struct IngestionOutcome {
+    pub decision: IngestionDecision,
+    pub image: Option<SanitizedImage>,
+    pub reason: &'static str,
+}
+
+/// Policy wrapper around ingestion. Rejected input never produces a public
+/// derivative. Suspicious-but-decodable input is quarantined even though a
+/// sanitized derivative was successfully constructed.
+pub fn evaluate_upload(input: &[u8]) -> IngestionOutcome {
+    match ingest(input) {
+        Ok(image) if image.anomaly_flags.is_empty() => IngestionOutcome {
+            decision: IngestionDecision::AcceptSanitized,
+            image: Some(image),
+            reason: "sanitized derivative accepted",
+        },
+        Ok(image) => IngestionOutcome {
+            decision: IngestionDecision::Quarantine,
+            image: Some(image),
+            reason: "image anomaly requires review",
+        },
+        Err(IngestError::TooLarge) => IngestionOutcome {
+            decision: IngestionDecision::Reject,
+            image: None,
+            reason: "upload exceeds byte limit",
+        },
+        Err(IngestError::UnsupportedFormat) => IngestionOutcome {
+            decision: IngestionDecision::Reject,
+            image: None,
+            reason: "unsupported or unrecognized image format",
+        },
+        Err(IngestError::DimensionsExceeded) => IngestionOutcome {
+            decision: IngestionDecision::Reject,
+            image: None,
+            reason: "image dimensions exceed safety limits",
+        },
+        Err(IngestError::DecodeFailed) => IngestionOutcome {
+            decision: IngestionDecision::Reject,
+            image: None,
+            reason: "image failed strict decode",
+        },
+        Err(IngestError::EncodeFailed) => IngestionOutcome {
+            decision: IngestionDecision::Reject,
+            image: None,
+            reason: "sanitized derivative could not be produced",
+        },
+    }
+}
+
 #[derive(Debug)]
 pub struct SanitizedImage {
     pub format: AcceptedFormat,
@@ -198,6 +255,37 @@ mod tests {
         let result = ingest(&tiny_png()).unwrap();
         assert_eq!(result.original_sha256.len(), 64);
         assert_eq!(result.sanitized_sha256.len(), 64);
+    }
+
+    #[test]
+    fn clean_image_accepts_only_sanitized_derivative() {
+        let result = evaluate_upload(&tiny_png());
+        assert_eq!(result.decision, IngestionDecision::AcceptSanitized);
+        assert!(result.image.is_some());
+    }
+
+    #[test]
+    fn trailing_payload_is_quarantined() {
+        let mut input = tiny_png();
+        input.extend_from_slice(b"PK\\x03\\x04SUSPICIOUS");
+        let result = evaluate_upload(&input);
+        assert_eq!(result.decision, IngestionDecision::Quarantine);
+        assert!(result.image.unwrap().anomaly_flags.contains(&"trailing_payload"));
+    }
+
+    #[test]
+    fn malformed_bytes_are_rejected() {
+        let result = evaluate_upload(b"\\x89PNG\\r\\nnot-a-valid-png");
+        assert_eq!(result.decision, IngestionDecision::Reject);
+        assert!(result.image.is_none());
+    }
+
+    #[test]
+    fn oversized_input_is_rejected_before_parsing() {
+        let input = vec![0_u8; MAX_UPLOAD_BYTES + 1];
+        let result = evaluate_upload(&input);
+        assert_eq!(result.decision, IngestionDecision::Reject);
+        assert!(result.image.is_none());
     }
 
     #[test]
