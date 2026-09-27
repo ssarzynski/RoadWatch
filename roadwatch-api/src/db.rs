@@ -421,8 +421,32 @@ pub async fn insert_image_evidence(
     .bind(format!("{:016x}", e.perceptual_hash))
     .bind(e.ingestion_decision)
     .bind(e.eligible_for_scoring)
-    .fetch_one(pool)
-    .await
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO evidence_risk_assessments (
+          evidence_id, policy_version, risk_score, disposition,
+          independent_weight_allowed, exact_replay_detected,
+          perceptual_replay_detected, signals
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(evidence_id)
+    .bind(risk.policy_version)
+    .bind(risk.risk_score)
+    .bind(risk.disposition)
+    .bind(risk.independent_weight_allowed)
+    .bind(risk.exact_replay_detected)
+    .bind(risk.perceptual_replay_detected)
+    .bind(risk.signals)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(evidence_id)
 }
 
 pub async fn nearby(pool: &PgPool, lat: f64, lon: f64, radius_m: u32) -> Result<Vec<CameraRow>, sqlx::Error> {
