@@ -20,6 +20,7 @@ pub struct CameraRow {
 
 #[derive(Debug, Clone)]
 pub struct NewReport<'a> {
+    pub contributor_token_hash: Option<String>,
     pub latitude: f64,
     pub longitude: f64,
     pub bearing_degrees: Option<i16>,
@@ -66,20 +67,22 @@ pub async fn store_report(pool: &PgPool, report: NewReport<'_>) -> Result<Stored
     let report_id = sqlx::query_scalar::<_, Uuid>(
         r#"
         INSERT INTO reports (
-          camera_id, observed_location, claimed_function,
+          camera_id, contributor_token_hash, observed_location, claimed_function,
           claimed_manufacturer, bearing_degrees, observed_at
         )
         VALUES (
           NULL,
-          ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-          $3::camera_function,
-          $4,
+          $1,
+          ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
+          $4::camera_function,
           $5,
-          CASE WHEN $6::text IS NULL THEN NULL ELSE $6::timestamptz END
+          $6,
+          CASE WHEN $7::text IS NULL THEN NULL ELSE $7::timestamptz END
         )
         RETURNING report_id
         "#,
     )
+    .bind(report.contributor_token_hash.as_deref())
     .bind(report.longitude)
     .bind(report.latitude)
     .bind(report.claimed_function)
