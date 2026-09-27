@@ -134,3 +134,27 @@ ALTER TABLE verification_events
 CREATE UNIQUE INDEX verification_events_ledger_sequence_uidx
   ON verification_events(ledger_sequence)
   WHERE ledger_sequence IS NOT NULL;
+
+
+CREATE TABLE q_ledger_checkpoints (
+  checkpoint_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tree_size BIGINT NOT NULL CHECK (tree_size >= 0),
+  merkle_root TEXT NOT NULL CHECK (length(merkle_root) = 64),
+  last_event_hash TEXT NOT NULL CHECK (length(last_event_hash) = 64),
+  created_at TIMESTAMPTZ NOT NULL,
+  signer_public_key TEXT NOT NULL CHECK (length(signer_public_key) = 64),
+  signature TEXT NOT NULL UNIQUE CHECK (length(signature) = 128),
+  UNIQUE (tree_size, merkle_root)
+);
+
+CREATE TABLE q_ledger_witnesses (
+  witness_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  checkpoint_id UUID NOT NULL REFERENCES q_ledger_checkpoints(checkpoint_id) ON DELETE RESTRICT,
+  witness_public_key TEXT NOT NULL CHECK (length(witness_public_key) = 64),
+  witnessed_at TIMESTAMPTZ NOT NULL,
+  witness_signature TEXT NOT NULL UNIQUE CHECK (length(witness_signature) = 128),
+  UNIQUE (checkpoint_id, witness_public_key)
+);
+
+-- A witness key represents an independent trust domain. Do not store witness
+-- private keys in the RoadWatch application database.
