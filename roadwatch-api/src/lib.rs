@@ -282,16 +282,34 @@ async fn upload_evidence(
     });
     let risk_allows_scoring = risk.independent_weight_allowed;
 
-    let inserted = db::insert_image_evidence(&pool, db::NewEvidence {
-        report_id,
-        quarantine_object_key: quarantine.as_ref().map(|o| o.object_key.as_str()),
-        sanitized_object_key: Some(&sanitized.object_key),
-        original_sha256: &image.original_sha256,
-        sanitized_sha256: &image.sanitized_sha256,
-        perceptual_hash: image.perceptual_hash,
-        ingestion_decision: decision,
-        eligible_for_scoring: requested_eligibility && risk_allows_scoring,
-    }).await;
+    let risk_disposition = match risk.disposition {
+        risk::ReviewDisposition::Normal => "normal",
+        risk::ReviewDisposition::Review => "review",
+        risk::ReviewDisposition::Quarantine => "quarantine",
+    };
+    let inserted = db::insert_image_evidence(
+        &pool,
+        db::NewEvidence {
+            report_id,
+            quarantine_object_key: quarantine.as_ref().map(|o| o.object_key.as_str()),
+            sanitized_object_key: Some(&sanitized.object_key),
+            original_sha256: &image.original_sha256,
+            sanitized_sha256: &image.sanitized_sha256,
+            perceptual_hash: image.perceptual_hash,
+            ingestion_decision: decision,
+            eligible_for_scoring: requested_eligibility && risk_allows_scoring,
+        },
+        db::NewEvidenceRiskAssessment {
+            policy_version: "evidence-risk-v0.1",
+            risk_score: i16::from(risk.score),
+            disposition: risk_disposition,
+            independent_weight_allowed: risk.independent_weight_allowed,
+            exact_replay_detected: exact_replay,
+            perceptual_replay_detected: perceptual_replay,
+            signals: &risk.signals,
+        },
+    )
+    .await;
 
     if inserted.is_err() {
         // Compensation: quarantine names are unique and safe to remove. Sanitized
