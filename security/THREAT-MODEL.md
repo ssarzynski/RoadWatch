@@ -28,3 +28,23 @@ Camera-registry integrity, evidence provenance, contributor privacy, API availab
 
 ## Explicit non-goals
 RoadWatch will not provide capabilities to access camera feeds, compromise systems, disable equipment, interfere with infrastructure, or identify individual motorists.
+
+
+## Untrusted image/evidence uploads
+
+Image evidence is an active attack surface. Threats include metadata leakage, parser exploits, decompression bombs, malformed files, polyglots/appended payloads, embedded content, replayed images, near-duplicate re-encodes, and steganography.
+
+Controls:
+- original uploads are never publicly served
+- strict byte/pixel/dimension/resource limits
+- content-signature validation rather than extension trust
+- JPEG/PNG allowlist initially
+- exact SHA-256 and perceptual-hash checks
+- metadata inspection followed by stripping
+- decode/re-encode content disarm before public use
+- heuristic steganography/anomaly checks as review signals only
+- private quarantine for suspicious originals
+- public API never exposes private object locations
+- sandboxed decoder and fuzz/malformed-image corpus are required hardening targets
+
+See `security/IMAGE-INGESTION.md`.
