@@ -21,6 +21,7 @@ verify_crate() {
 
 verify_crate verification-engine/Cargo.toml "verification engine"
 verify_crate roadwatch-api/Cargo.toml "RoadWatch API"
+verify_crate image-ingestion/Cargo.toml "image ingestion security"
 
 echo
 echo "PASS: RoadWatch local checks completed."
