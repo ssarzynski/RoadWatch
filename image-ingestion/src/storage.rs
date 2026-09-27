@@ -50,6 +50,14 @@ impl LocalEvidenceStore {
         Ok(StoredObject { object_key: key })
     }
 
+    pub fn list_quarantine(&self) -> io::Result<Vec<(String, std::time::SystemTime)>> {
+        list_objects(&self.quarantine_root, valid_uuid_key)
+    }
+
+    pub fn list_sanitized(&self) -> io::Result<Vec<(String, std::time::SystemTime)>> {
+        list_objects(&self.sanitized_root, valid_sha256_hex)
+    }
+
     pub fn delete_sanitized(&self, object_key: &str) -> io::Result<()> {
         if !valid_sha256_hex(object_key) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid sanitized key"));
@@ -71,6 +79,24 @@ impl LocalEvidenceStore {
             Err(e) => Err(e),
         }
     }
+}
+
+
+fn list_objects(root: &Path, validator: fn(&str) -> bool) -> io::Result<Vec<(String, std::time::SystemTime)>> {
+    let mut objects = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+        if !validator(&name) {
+            continue;
+        }
+        let modified = entry.metadata()?.modified()?;
+        objects.push((name, modified));
+    }
+    Ok(objects)
 }
 
 fn atomic_write(root: &Path, key: &str, bytes: &[u8]) -> io::Result<()> {
