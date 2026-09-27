@@ -1,9 +1,12 @@
 //! Deterministic RoadWatch verification policy.
-//! AI classifiers may provide advisory evidence, but cannot independently verify a camera.
+//! Scores are explainable policy evidence scores, never statistical probabilities.
+//! AI classification is advisory and cannot establish physical camera presence.
 
 pub mod candidate;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EvidenceKind {
     FieldObservation,
     Photo,
@@ -25,66 +28,107 @@ pub struct Evidence {
 pub enum VerificationStatus {
     Unverified,
     Probable,
+    HighConfidence,
     Verified,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationResult {
-    pub status: VerificationStatus,
-    pub confidence: f32,
-    pub independent_sources: usize,
+    pub presence_status: VerificationStatus,
+    pub presence_evidence_score: u8,
+    pub classification_evidence_score: u8,
+    pub independent_presence_sources: usize,
     pub reasons: Vec<&'static str>,
 }
 
-fn weight(kind: EvidenceKind) -> f32 {
+fn presence_weight(kind: EvidenceKind) -> u8 {
     match kind {
-        EvidenceKind::FieldObservation => 0.22,
-        EvidenceKind::Photo => 0.22,
-        EvidenceKind::IndependentObservation => 0.20,
-        EvidenceKind::GovernmentDataset => 0.35,
-        EvidenceKind::OpenGeospatialRecord => 0.15,
-        EvidenceKind::PublicProcurementRecord => 0.20,
-        EvidenceKind::AiClassification => 0.08,
+        EvidenceKind::FieldObservation => 25,
+        EvidenceKind::Photo => 25,
+        EvidenceKind::IndependentObservation => 20,
+        EvidenceKind::GovernmentDataset => 40,
+        EvidenceKind::OpenGeospatialRecord => 15,
+        EvidenceKind::PublicProcurementRecord => 10,
+        EvidenceKind::AiClassification => 0,
     }
 }
 
+fn classification_weight(kind: EvidenceKind) -> u8 {
+    match kind {
+        EvidenceKind::FieldObservation => 10,
+        EvidenceKind::Photo => 25,
+        EvidenceKind::IndependentObservation => 10,
+        EvidenceKind::GovernmentDataset => 35,
+        EvidenceKind::OpenGeospatialRecord => 10,
+        EvidenceKind::PublicProcurementRecord => 20,
+        EvidenceKind::AiClassification => 10,
+    }
+}
+
+fn capped_score(evidence: &[Evidence], weight: fn(EvidenceKind) -> u8) -> u8 {
+    // One contribution per source+evidence class prevents replaying the same
+    // source/class from inflating a score.
+    let mut seen: HashSet<(&str, EvidenceKind)> = HashSet::new();
+    let mut total: u16 = 0;
+    for item in evidence {
+        if seen.insert((item.source_key.as_str(), item.kind)) {
+            total = total.saturating_add(weight(item.kind) as u16);
+        }
+    }
+    total.min(100) as u8
+}
+
 pub fn evaluate(evidence: &[Evidence]) -> VerificationResult {
-    use std::collections::HashSet;
+    let presence_evidence_score = capped_score(evidence, presence_weight);
+    let classification_evidence_score = capped_score(evidence, classification_weight);
 
-    let sources: HashSet<&str> = evidence.iter().map(|e| e.source_key.as_str()).collect();
-    let independent_sources = sources.len();
-
-    // Diminishing-return evidence score. This is a policy score, not a statistical probability.
-    let confidence = evidence
+    let presence_sources: HashSet<&str> = evidence
         .iter()
-        .fold(0.0_f32, |score, e| score + (1.0 - score) * weight(e.kind))
-        .clamp(0.0, 0.99);
+        .filter(|e| presence_weight(e.kind) > 0)
+        .map(|e| e.source_key.as_str())
+        .collect();
+    let independent_presence_sources = presence_sources.len();
 
-    let has_authoritative = evidence.iter().any(|e| e.kind == EvidenceKind::GovernmentDataset);
-    let has_non_ai = evidence.iter().any(|e| e.kind != EvidenceKind::AiClassification);
-    let corroborated = independent_sources >= 2;
-    let verification_gate = has_non_ai && (corroborated || has_authoritative);
+    let has_authoritative_presence = evidence
+        .iter()
+        .any(|e| e.kind == EvidenceKind::GovernmentDataset);
+    let corroborated = independent_presence_sources >= 2;
 
-    let status = if verification_gate && confidence >= 0.60 {
+    // Verification requires a high score AND independent corroboration, or
+    // authoritative public data plus at least one independent field/source signal.
+    let authoritative_plus_independent =
+        has_authoritative_presence && independent_presence_sources >= 2;
+
+    let presence_status = if presence_evidence_score >= 90
+        && (corroborated || authoritative_plus_independent)
+    {
         VerificationStatus::Verified
-    } else if confidence >= 0.35 {
+    } else if presence_evidence_score >= 70 && corroborated {
+        VerificationStatus::HighConfidence
+    } else if presence_evidence_score >= 40 {
         VerificationStatus::Probable
     } else {
         VerificationStatus::Unverified
     };
 
     let mut reasons = Vec::new();
-    if !has_non_ai {
-        reasons.push("AI-only evidence cannot verify a camera");
+    if evidence.iter().all(|e| e.kind == EvidenceKind::AiClassification) && !evidence.is_empty() {
+        reasons.push("AI-only evidence cannot establish camera presence");
     }
-    if !corroborated && !has_authoritative {
-        reasons.push("independent corroboration is required");
+    if !corroborated {
+        reasons.push("independent presence corroboration is required for high confidence");
     }
-    if has_authoritative {
+    if has_authoritative_presence {
         reasons.push("authoritative public dataset present");
     }
 
-    VerificationResult { status, confidence, independent_sources, reasons }
+    VerificationResult {
+        presence_status,
+        presence_evidence_score,
+        classification_evidence_score,
+        independent_presence_sources,
+        reasons,
+    }
 }
 
 /// Haversine distance in meters. Used for candidate duplicate searches before
@@ -112,40 +156,56 @@ mod tests {
     }
 
     #[test]
-    fn ai_alone_never_verifies() {
+    fn ai_alone_has_zero_presence_score() {
         let result = evaluate(&[
             e(EvidenceKind::AiClassification, "model-a"),
             e(EvidenceKind::AiClassification, "model-b"),
         ]);
-        assert_ne!(result.status, VerificationStatus::Verified);
+        assert_eq!(result.presence_evidence_score, 0);
+        assert_eq!(result.presence_status, VerificationStatus::Unverified);
+        assert!(result.classification_evidence_score > 0);
     }
 
     #[test]
-    fn repeated_same_source_is_not_independent() {
+    fn repeated_same_source_and_class_does_not_stack() {
+        let one = evaluate(&[e(EvidenceKind::Photo, "alice")]);
+        let repeated = evaluate(&[
+            e(EvidenceKind::Photo, "alice"),
+            e(EvidenceKind::Photo, "alice"),
+            e(EvidenceKind::Photo, "alice"),
+        ]);
+        assert_eq!(one.presence_evidence_score, repeated.presence_evidence_score);
+        assert_eq!(repeated.independent_presence_sources, 1);
+    }
+
+    #[test]
+    fn same_source_different_classes_can_add_evidence_but_not_independence() {
         let result = evaluate(&[
             e(EvidenceKind::Photo, "alice"),
             e(EvidenceKind::FieldObservation, "alice"),
-            e(EvidenceKind::IndependentObservation, "alice"),
         ]);
-        assert_eq!(result.independent_sources, 1);
-        assert_ne!(result.status, VerificationStatus::Verified);
+        assert_eq!(result.presence_evidence_score, 50);
+        assert_eq!(result.independent_presence_sources, 1);
+        assert_eq!(result.presence_status, VerificationStatus::Probable);
     }
 
     #[test]
     fn independent_strong_evidence_can_verify() {
         let result = evaluate(&[
+            e(EvidenceKind::GovernmentDataset, "agency"),
             e(EvidenceKind::Photo, "alice"),
             e(EvidenceKind::FieldObservation, "alice"),
             e(EvidenceKind::IndependentObservation, "bob"),
-            e(EvidenceKind::OpenGeospatialRecord, "osm"),
         ]);
-        assert_eq!(result.status, VerificationStatus::Verified);
+        assert_eq!(result.presence_evidence_score, 100);
+        assert_eq!(result.presence_status, VerificationStatus::Verified);
     }
 
     #[test]
-    fn government_data_still_needs_sufficient_evidence_score() {
+    fn authoritative_source_alone_is_not_verified() {
         let result = evaluate(&[e(EvidenceKind::GovernmentDataset, "agency")]);
-        assert_eq!(result.status, VerificationStatus::Probable);
+        assert_eq!(result.presence_status, VerificationStatus::Probable);
+        assert_eq!(result.independent_presence_sources, 1);
     }
 
     #[test]
