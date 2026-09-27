@@ -35,7 +35,20 @@ pub struct StoredReport {
     pub candidate_camera_ids: Vec<Uuid>,
 }
 
-pub async fn store_report(pool: &PgPool, report: NewReport<'_>) -> Result<StoredReport, sqlx::Error> {
+#[derive(Debug, Clone)]
+pub struct NewReportRiskAssessment<'a> {
+    pub policy_version: &'a str,
+    pub risk_score: i16,
+    pub disposition: &'a str,
+    pub independent_weight_allowed: bool,
+    pub signals: &'a [&'a str],
+}
+
+pub async fn store_report(
+    pool: &PgPool,
+    report: NewReport<'_>,
+    risk: Option<NewReportRiskAssessment<'_>>,
+) -> Result<StoredReport, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
     // Candidate lookup only. A spatial hit never auto-merges or verifies records.
@@ -91,6 +104,26 @@ pub async fn store_report(pool: &PgPool, report: NewReport<'_>) -> Result<Stored
     .bind(report.observed_at)
     .fetch_one(&mut *tx)
     .await?;
+
+    if let Some(risk) = risk {
+        sqlx::query(
+            r#"
+            INSERT INTO report_risk_assessments (
+              report_id, policy_version, risk_score, disposition,
+              independent_weight_allowed, signals
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(report_id)
+        .bind(risk.policy_version)
+        .bind(risk.risk_score)
+        .bind(risk.disposition)
+        .bind(risk.independent_weight_allowed)
+        .bind(risk.signals)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     tx.commit().await?;
     Ok(StoredReport { report_id, candidate_camera_ids: candidates })
