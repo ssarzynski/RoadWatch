@@ -62,3 +62,17 @@ GPS coordinates used for the camera report belong in structured RoadWatch report
 - corpus tests with malformed/polyglot/trailing-data samples
 - steganography test corpus
 - quarantine retention/deletion policy
+
+
+## Pre-decode resource boundary
+
+RoadWatch reads image container dimensions before full pixel decoding. Width, height, and total-pixel policy are rejected before the large decoded buffer is allocated. The decoder is also configured with an allocation ceiling as a second resource boundary.
+
+Current policy:
+- maximum upload: 12 MiB
+- maximum width: 8192 px
+- maximum height: 8192 px
+- maximum total pixels: 40,000,000
+- decoder allocation ceiling: approximately 4 bytes per maximum allowed pixel
+
+This materially reduces decompression-bomb risk, but production deployment should still run untrusted decoding in a constrained worker/sandbox with OS-level memory/CPU/time limits. Application-level limits are defense in depth, not a substitute for process isolation.
