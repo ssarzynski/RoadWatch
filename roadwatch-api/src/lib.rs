@@ -16,6 +16,7 @@ use roadwatch_verification::risk::{self, PriorObservation, RiskInput};
 use std::sync::Arc;
 use sqlx::PgPool;
 use uuid::Uuid;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub const MAX_NEARBY_RADIUS_M: u32 = 5_000;
 
@@ -98,15 +99,27 @@ async fn create_report(
         return Err(bad_request("unsupported claimed_function"));
     }
 
-    let contributor_hash = headers
-        .get("x-roadwatch-contributor")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|raw| {
-            state
+    if let Some(observed_at) = report.observed_at.as_deref() {
+        OffsetDateTime::parse(observed_at, &Rfc3339)
+            .map_err(|_| bad_request("observed_at must be RFC3339"))?;
+    }
+
+    let contributor_hash = match headers.get("x-roadwatch-contributor") {
+        None => None,
+        Some(value) => {
+            let raw = value
+                .to_str()
+                .map_err(|_| bad_request("invalid contributor credential"))?;
+            let key = state
                 .contributor_hmac_key
                 .as_deref()
-                .and_then(|key| contributor_token_hash(raw, key))
-        });
+                .ok_or_else(|| internal_error("contributor correlation unavailable"))?;
+            Some(
+                contributor_token_hash(raw, key)
+                    .ok_or_else(|| bad_request("invalid contributor credential"))?,
+            )
+        }
+    };
 
     let report_risk = if let (Some(pool), Some(hash)) = (state.pool.as_ref(), contributor_hash.as_ref()) {
         match db::contributor_risk_facts(pool, hash).await {
