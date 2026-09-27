@@ -62,6 +62,9 @@ CREATE TABLE reports (
 );
 
 CREATE INDEX reports_location_gix ON reports USING GIST(observed_location);
+CREATE INDEX reports_contributor_created_idx
+  ON reports(contributor_token_hash, created_at DESC)
+  WHERE contributor_token_hash IS NOT NULL;
 
 CREATE TABLE evidence (
   evidence_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -82,6 +85,13 @@ CREATE TABLE evidence (
   captured_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX evidence_original_sha256_idx
+  ON evidence(original_sha256)
+  WHERE original_sha256 IS NOT NULL;
+CREATE INDEX evidence_perceptual_hash_created_idx
+  ON evidence(perceptual_hash, created_at DESC)
+  WHERE perceptual_hash IS NOT NULL;
 
 CREATE TABLE observations (
   observation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
