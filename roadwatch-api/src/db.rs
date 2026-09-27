@@ -105,6 +105,105 @@ pub struct NewEvidence<'a> {
 }
 
 
+
+#[derive(Debug)]
+pub struct ContributorRiskFacts {
+    pub reports_last_hour: i64,
+    pub prior_latitude: Option<f64>,
+    pub prior_longitude: Option<f64>,
+    pub prior_received_unix: Option<i64>,
+}
+
+pub async fn contributor_risk_facts(
+    pool: &PgPool,
+    contributor_token_hash: &str,
+) -> Result<ContributorRiskFacts, sqlx::Error> {
+    let reports_last_hour = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT count(*)::bigint
+        FROM reports
+        WHERE contributor_token_hash = $1
+          AND created_at >= now() - interval '1 hour'
+        "#,
+    )
+    .bind(contributor_token_hash)
+    .fetch_one(pool)
+    .await?;
+
+    let prior = sqlx::query_as::<_, (f64, f64, i64)>(
+        r#"
+        SELECT
+          ST_Y(observed_location::geometry) AS latitude,
+          ST_X(observed_location::geometry) AS longitude,
+          extract(epoch from created_at)::bigint AS received_unix
+        FROM reports
+        WHERE contributor_token_hash = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(contributor_token_hash)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(match prior {
+        Some((lat, lon, ts)) => ContributorRiskFacts {
+            reports_last_hour,
+            prior_latitude: Some(lat),
+            prior_longitude: Some(lon),
+            prior_received_unix: Some(ts),
+        },
+        None => ContributorRiskFacts {
+            reports_last_hour,
+            prior_latitude: None,
+            prior_longitude: None,
+            prior_received_unix: None,
+        },
+    })
+}
+
+pub async fn exact_image_replay_exists(
+    pool: &PgPool,
+    original_sha256: &str,
+    exclude_report_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+          SELECT 1 FROM evidence
+          WHERE original_sha256 = $1
+            AND report_id <> $2
+        )
+        "#,
+    )
+    .bind(original_sha256)
+    .bind(exclude_report_id)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn recent_perceptual_hashes(
+    pool: &PgPool,
+    exclude_report_id: Uuid,
+    limit: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT perceptual_hash
+        FROM evidence
+        WHERE report_id <> $1
+          AND perceptual_hash IS NOT NULL
+          AND created_at >= now() - interval '30 days'
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(exclude_report_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn quarantine_key_is_referenced(pool: &PgPool, key: &str) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM evidence WHERE quarantine_object_key = $1)"
