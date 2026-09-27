@@ -158,3 +158,20 @@ CREATE TABLE q_ledger_witnesses (
 
 -- A witness key represents an independent trust domain. Do not store witness
 -- private keys in the RoadWatch application database.
+
+
+-- Preserve conflicting signed checkpoints as evidence. Never auto-delete or
+-- auto-resolve these rows merely because a later checkpoint appears normal.
+CREATE TABLE q_ledger_conflicts (
+  conflict_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  signer_public_key TEXT NOT NULL CHECK (length(signer_public_key) = 64),
+  tree_size BIGINT NOT NULL CHECK (tree_size >= 0),
+  first_merkle_root TEXT NOT NULL CHECK (length(first_merkle_root) = 64),
+  second_merkle_root TEXT NOT NULL CHECK (length(second_merkle_root) = 64),
+  first_signature TEXT NOT NULL CHECK (length(first_signature) = 128),
+  second_signature TEXT NOT NULL CHECK (length(second_signature) = 128),
+  detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolution_state TEXT NOT NULL DEFAULT 'open'
+    CHECK (resolution_state IN ('open', 'investigating', 'explained', 'confirmed_equivocation')),
+  UNIQUE (signer_public_key, tree_size, first_merkle_root, second_merkle_root)
+);
