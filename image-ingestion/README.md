@@ -12,6 +12,8 @@ Current controls:
 - 8192x8192 per-axis limit
 - 40 million pixel limit
 - SHA-256 before and after sanitization
+- 64-bit perceptual image fingerprint for near-duplicate/replay screening
+- trailing-data detection after JPEG/PNG terminators
 - fresh re-encoding without intentionally copying original metadata/container segments
 - advisory anomaly flags
 
@@ -19,7 +21,6 @@ The anomaly layer does **not** claim to prove the absence of steganography.
 
 Planned hardening:
 - sandboxed decoder worker
-- perceptual hashing
 - exact/trailing-container validation
 - richer statistical steganography indicators
 - malformed/polyglot corpus
