@@ -1,12 +1,13 @@
 pub mod db;
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use roadwatch_image_ingestion::{evaluate_upload, IngestionDecision};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -25,6 +26,7 @@ pub fn app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/reports", post(create_report))
+        .route("/v1/reports/{report_id}/evidence", post(upload_evidence))
         .route("/v1/cameras/nearby", get(nearby_cameras))
         .with_state(state)
 }
@@ -88,6 +90,63 @@ async fn create_report(
         status: "accepted_unverified",
         duplicate_candidate_ids: stored.candidate_camera_ids,
     })))
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvidenceUploadResponse {
+    pub report_id: Uuid,
+    pub decision: &'static str,
+    pub eligible_for_scoring: bool,
+    pub original_sha256: Option<String>,
+    pub sanitized_sha256: Option<String>,
+    pub perceptual_hash: Option<u64>,
+    pub anomaly_flags: Vec<&'static str>,
+}
+
+async fn upload_evidence(
+    Path(report_id): Path<Uuid>,
+    body: axum::body::Bytes,
+) -> (StatusCode, Json<EvidenceUploadResponse>) {
+    let outcome = evaluate_upload(&body);
+
+    match outcome.decision {
+        IngestionDecision::AcceptSanitized => {
+            let image = outcome.image.expect("accepted ingestion must contain sanitized image");
+            (StatusCode::ACCEPTED, Json(EvidenceUploadResponse {
+                report_id,
+                decision: "accepted_sanitized",
+                eligible_for_scoring: true,
+                original_sha256: Some(image.original_sha256),
+                sanitized_sha256: Some(image.sanitized_sha256),
+                perceptual_hash: Some(image.perceptual_hash),
+                anomaly_flags: image.anomaly_flags,
+            }))
+        }
+        IngestionDecision::Quarantine => {
+            let image = outcome.image.expect("quarantined ingestion must contain sanitized image");
+            (StatusCode::ACCEPTED, Json(EvidenceUploadResponse {
+                report_id,
+                decision: "quarantined",
+                eligible_for_scoring: false,
+                original_sha256: Some(image.original_sha256),
+                sanitized_sha256: Some(image.sanitized_sha256),
+                perceptual_hash: Some(image.perceptual_hash),
+                anomaly_flags: image.anomaly_flags,
+            }))
+        }
+        IngestionDecision::Reject => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(EvidenceUploadResponse {
+                report_id,
+                decision: "rejected",
+                eligible_for_scoring: false,
+                original_sha256: None,
+                sanitized_sha256: None,
+                perceptual_hash: None,
+                anomaly_flags: Vec::new(),
+            }),
+        ),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,6 +258,24 @@ mod tests {
         let bytes = to_bytes(response.into_body(), 16_384).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["cameras"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn malformed_evidence_is_rejected_before_scoring() {
+        let report_id = Uuid::new_v4();
+        let response = app().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/reports/{report_id}/evidence"))
+                .header("content-type", "application/octet-stream")
+                .body(Body::from("not-an-image"))
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = to_bytes(response.into_body(), 16_384).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["eligible_for_scoring"], false);
+        assert_eq!(value["decision"], "rejected");
     }
 
     #[tokio::test]
