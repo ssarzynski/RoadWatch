@@ -8,3 +8,4 @@ license = "Apache-2.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 sha2 = "0.10"
 thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
