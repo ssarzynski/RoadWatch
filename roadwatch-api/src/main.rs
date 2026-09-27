@@ -1,5 +1,7 @@
 use roadwatch_api::{app_with_state, AppState};
 use sqlx::postgres::PgPoolOptions;
+use roadwatch_image_ingestion::storage::LocalEvidenceStore;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -18,12 +20,25 @@ async fn main() {
         }
     };
 
+    let evidence_store = match (
+        std::env::var("ROADWATCH_QUARANTINE_DIR").ok(),
+        std::env::var("ROADWATCH_SANITIZED_DIR").ok(),
+    ) {
+        (Some(q), Some(s)) => Some(Arc::new(
+            LocalEvidenceStore::new(q, s).expect("failed to initialize evidence storage"),
+        )),
+        _ => {
+            eprintln!("WARNING: evidence storage directories not configured; uploads fail closed");
+            None
+        }
+    };
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
         .await
         .expect("failed to bind RoadWatch API");
 
     println!("RoadWatch API listening on http://127.0.0.1:8080");
-    axum::serve(listener, app_with_state(AppState { pool }))
+    axum::serve(listener, app_with_state(AppState { pool, evidence_store }))
         .await
         .expect("RoadWatch API server failed");
 }
