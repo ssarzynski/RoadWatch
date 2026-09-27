@@ -121,29 +121,41 @@ async fn create_report(
         }
     };
 
-    let report_risk = if let (Some(pool), Some(hash)) = (state.pool.as_ref(), contributor_hash.as_ref()) {
+    let report_risk = if let (Some(pool), Some(hash)) =
+        (state.pool.as_ref(), contributor_hash.as_ref())
+    {
         match db::contributor_risk_facts(pool, hash).await {
             Ok(facts) => {
-                let prior = match (facts.prior_latitude, facts.prior_longitude, facts.prior_received_unix) {
-                    (Some(latitude), Some(longitude), Some(received_at)) =>
-                        Some(PriorObservation { latitude, longitude, received_at }),
+                let prior = match (
+                    facts.prior_latitude,
+                    facts.prior_longitude,
+                    facts.prior_received_unix,
+                ) {
+                    (Some(latitude), Some(longitude), Some(received_at)) => {
+                        Some(PriorObservation { latitude, longitude, received_at })
+                    }
                     _ => None,
                 };
-                let received_at = sqlx::query_scalar::<_, i64>(
-                    "SELECT extract(epoch from clock_timestamp())::bigint"
-                ).fetch_one(pool).await.unwrap_or(0);
-                Some(risk::assess(&RiskInput {
-                    latitude: report.latitude,
-                    longitude: report.longitude,
-                    received_at,
-                    reports_last_hour: facts.reports_last_hour.max(0) as u32,
-                    exact_image_replay: false,
-                    perceptual_image_replay: false,
-                    correlated_source_count: 0,
-                    prior: prior.as_ref(),
-                }))
+                match sqlx::query_scalar::<_, i64>(
+                    "SELECT extract(epoch from clock_timestamp())::bigint",
+                )
+                .fetch_one(pool)
+                .await
+                {
+                    Ok(received_at) => Some(risk::assess(&RiskInput {
+                        latitude: report.latitude,
+                        longitude: report.longitude,
+                        received_at,
+                        reports_last_hour: facts.reports_last_hour.max(0) as u32,
+                        exact_image_replay: false,
+                        perceptual_image_replay: false,
+                        correlated_source_count: 0,
+                        prior: prior.as_ref(),
+                    })),
+                    Err(_) => Some(incomplete_risk_assessment()),
+                }
             }
-            Err(_) => None,
+            Err(_) => Some(incomplete_risk_assessment()),
         }
     } else {
         None
@@ -202,6 +214,16 @@ pub struct EvidenceUploadResponse {
     pub eligible_for_scoring: bool,
 }
 
+
+
+fn incomplete_risk_assessment() -> risk::RiskAssessment {
+    risk::RiskAssessment {
+        score: 0,
+        disposition: risk::ReviewDisposition::Review,
+        independent_weight_allowed: false,
+        signals: vec!["risk_evaluation_incomplete"],
+    }
+}
 
 fn perceptual_replay(current: u64, stored: &[String]) -> bool {
     stored.iter().any(|value| {
