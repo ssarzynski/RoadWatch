@@ -52,3 +52,21 @@ versions can use hardware-backed or OS key stores.
 Multiple signatures only provide meaningful additional assurance when their private keys
 and administrative control are genuinely independent. Three services on one host using
 the same secret are one trust domain, not three witnesses.
+
+
+## Split-view detection
+
+Witnesses should exchange signed checkpoint identities (signer public key, tree size,
+Merkle root, last-event hash and signature).
+
+Two independently valid checkpoints signed by the same log key at the same tree size but
+with different Merkle roots or last-event hashes are an equivocation conflict. Preserve
+both signed checkpoints and raise the conflict for investigation. Do not automatically
+choose one branch or delete either statement.
+
+A checkpoint at a larger tree size is not, by itself, cryptographic proof that it extends
+an earlier checkpoint. Q Ledger v0.1 therefore labels different valid tree sizes as
+potential log growth, not as proven consistency.
+
+The next protocol revision should add Merkle consistency proofs so witnesses can verify
+that a newer root is an append-only extension of a previously witnessed root.
