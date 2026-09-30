@@ -1,0 +1,52 @@
+use roadwatch_api::{app_with_state, AppState};
+use sqlx::postgres::PgPoolOptions;
+use roadwatch_image_ingestion::storage::LocalEvidenceStore;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() {
+    let database_url = std::env::var("DATABASE_URL").ok();
+    let pool = match database_url {
+        Some(url) => Some(
+            PgPoolOptions::new()
+                .max_connections(10)
+                .connect(&url)
+                .await
+                .expect("failed to connect to RoadWatch database"),
+        ),
+        None => {
+            eprintln!("WARNING: DATABASE_URL not set; nearby queries return no records");
+            None
+        }
+    };
+
+    let evidence_store = match (
+        std::env::var("ROADWATCH_QUARANTINE_DIR").ok(),
+        std::env::var("ROADWATCH_SANITIZED_DIR").ok(),
+    ) {
+        (Some(q), Some(s)) => Some(Arc::new(
+            LocalEvidenceStore::new(q, s).expect("failed to initialize evidence storage"),
+        )),
+        _ => {
+            eprintln!("WARNING: evidence storage directories not configured; uploads fail closed");
+            None
+        }
+    };
+
+    let contributor_hmac_key = std::env::var("ROADWATCH_CONTRIBUTOR_HMAC_KEY")
+        .ok()
+        .filter(|value| value.as_bytes().len() >= 32)
+        .map(|value| Arc::new(value.into_bytes()));
+    if contributor_hmac_key.is_none() {
+        eprintln!("WARNING: contributor HMAC key missing/short; contributor correlation disabled");
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
+        .await
+        .expect("failed to bind RoadWatch API");
+
+    println!("RoadWatch API listening on http://127.0.0.1:8080");
+    axum::serve(listener, app_with_state(AppState { pool, evidence_store, contributor_hmac_key }))
+        .await
+        .expect("RoadWatch API server failed");
+}

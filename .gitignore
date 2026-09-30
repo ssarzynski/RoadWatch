@@ -10,3 +10,6 @@ build/
 coverage/
 .idea/
 .vscode/
+
+# Expo local state
+apps/mobile/.expo/
