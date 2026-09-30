@@ -1,5 +1,8 @@
 export type CameraKind="alpr"|"speed"|"red_light"|"traffic"|"unknown";
-export type Camera={id:string;latitude:number;longitude:number;kind:CameraKind;label:string;verified:boolean};
+import type { VerificationStatus } from "./verification/engine";
+
+export type Camera={id:string;latitude:number;longitude:number;kind:CameraKind;label:string;verified:boolean;verificationStatus?:VerificationStatus;verificationScore?:number};
+
 // Demo fixtures only. Never present these as real-world camera locations.
 export const DEMO_CAMERAS:Camera[]=[
 
